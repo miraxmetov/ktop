@@ -1,0 +1,21 @@
+#compdef ktop
+
+_ktop_namespaces() {
+    local -a ns
+    ns=(${${(f)"$(kubectl get ns -o name 2>/dev/null)"}#namespace/})
+    _describe -t namespaces 'namespace' ns
+}
+
+_ktop_contexts() {
+    local -a ctx
+    ctx=(${(f)"$(kubectl config get-contexts -o name 2>/dev/null)"})
+    _describe -t contexts 'context' ctx
+}
+
+_arguments -s \
+    '(-h --help)'{-h,--help}'[show help]' \
+    '(-V --version)'{-V,--version}'[show version]' \
+    '(-i --interval)'{-i,--interval}'[refresh interval in seconds]:seconds:' \
+    '(-n --namespace)'{-n,--namespace}'[namespace to watch]:namespace:_ktop_namespaces' \
+    '(-c --context)'{-c,--context}'[kube context]:context:_ktop_contexts' \
+    '1:namespace:_ktop_namespaces'

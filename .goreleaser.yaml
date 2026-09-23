@@ -1,0 +1,55 @@
+version: 2
+project_name: ktop
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ktop
+    main: ./cmd/ktop
+    binary: ktop
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: ktop
+    ids:
+      - ktop
+    formats:
+      - tar.gz
+    name_template: "ktop_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: false
+    files:
+      - README.md
+      - LICENSE
+      - src: completions/*
+        dst: completions
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto

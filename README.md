@@ -7,7 +7,7 @@ the last exit code with its signal decoded, and how long ago the pod last restar
 Problem pods sort to the top, the hottest first.
 
 ```
-Current namespace: production
+Current namespace: production                                        ~/.kube/prod.yaml
 Search for namespaces...
 
 3 critical / 5 warning                                                    16:42:07
@@ -19,7 +19,6 @@ POD                          STATUS        CPU    %LIM      MEM   %LIM  RESTART 
 api-worker-5f7c9d8b4-xk2vn   Running      940m     94%   1840Mi    92%         9 +2        2  137 (SIGKILL)   4m12s ago (at 16:37:55)
 api-gateway-6b8d7c9f5-2mkqp  Running      210m     21%    612Mi    60%            0        0  -               -
 
-RESTART CTR is the pod's own total, +N is what happened since ktop started
 ```
 
 A single static binary: no interpreter, no shared libraries, no `kubectl` at runtime.
@@ -58,10 +57,14 @@ ktop production -i 5      # refresh every 5 seconds (default: 2)
 ktop -c staging -n web    # another kube context
 ```
 
+Without an argument ktop takes the namespace of the current kubeconfig context, falling back to
+`default` when the context does not name one.
+
 | Key | Action |
 | --- | --- |
 | `/` | search pods by name |
 | `n` | search and switch namespace |
+| `c` | change the kubeconfig, with file completion |
 | `Tab` | complete the search box with the highlighted entry |
 | `Shift+Tab` | move between the two search fields |
 | `↑` `↓` | pick from the open list, or move the cursor in the table |
@@ -73,6 +76,10 @@ ktop -c staging -n web    # another kube context
 | `g` `G` / `Home` `End` | jump to the first or last pod |
 | `r` | refresh right now, ahead of the interval |
 | `q` / `Ctrl+C` | quit |
+
+The kubeconfig in use is shown at the top right. Click it, or press `c`, to point ktop at a
+different one: the list offers what is in the directory you are typing, directories open as you
+take them, and a file switches the cluster, namespace included.
 
 The mouse works too: click a search box to open it, click an entry in the list to take it,
 click a row to put the cursor there, click anywhere else to close the list, and scroll the
@@ -127,7 +134,9 @@ column therefore counts the OOM kills ktop itself observed, and `EXIT` tells you
 termination was one.
 
 Green below 75%, yellow from 75%, red from 90%.
-Narrow windows drop the rightmost columns instead of wrapping.
+The table fills whatever terminal it is given: the pod column takes the space the other columns
+leave, and the row count follows the window height. Narrow windows drop the rightmost columns
+instead of wrapping.
 Usage columns need metrics-server in the cluster; without it they show `-` and the rest still works.
 
 ## Development

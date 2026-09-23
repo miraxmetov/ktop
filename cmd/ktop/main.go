@@ -5,11 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
 
 	"github.com/miraxmetov/ktop/internal/kube"
+	"github.com/miraxmetov/ktop/internal/paths"
 	"github.com/miraxmetov/ktop/internal/ui"
 )
 
@@ -39,10 +41,7 @@ func parseFlags() (options, error) {
 	fs.Float64Var(&intervalArg, "interval", 2, "refresh interval in seconds")
 	fs.BoolVar(&showVersion, "V", false, "print version and exit")
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
-	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: ktop [namespace] [-n namespace] [-c context] [-i seconds]\n\n")
-		fs.PrintDefaults()
-	}
+	fs.Usage = func() { fmt.Fprint(fs.Output(), usage) }
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		if err == flag.ErrHelp {
 			os.Exit(0)
@@ -66,6 +65,37 @@ func parseFlags() (options, error) {
 	return opts, nil
 }
 
+const usage = `ktop - live pod resource usage as a percentage of limits
+
+Usage:
+  ktop [namespace] [flags]
+
+Flags:
+  -n, --namespace NAMESPACE  namespace to watch; without it ktop takes the one from the
+                             current kubeconfig context
+                             ktop -n production
+
+  -c, --context CONTEXT      kube context to use, instead of the current one
+                             ktop -c staging-eu
+
+  -i, --interval SECONDS     how often to refresh, in seconds (default 2)
+                             ktop -i 5
+
+  -h, --help                 show this help and exit
+                             ktop --help
+
+  -V, --version              print the version and exit
+                             ktop --version
+
+The cluster comes from $KUBECONFIG, or ~/.kube/config; press c inside ktop to switch it.
+
+Examples:
+  ktop                       watch the namespace of the current context
+  ktop production            watch a namespace by name
+  ktop production -i 5       the same, refreshed every five seconds
+  KUBECONFIG=~/.kube/prod.yaml ktop
+`
+
 type podResult struct {
 	namespace string
 	result    kube.Result
@@ -82,6 +112,7 @@ type app struct {
 	client     *kube.Client
 	model      *ui.Model
 	namespace  string
+	context    string
 	interval   time.Duration
 	pods       chan podResult
 	namespaces chan namespaceResult
@@ -99,10 +130,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ktop: "+err.Error())
 		os.Exit(1)
 	}
-	namespace := opts.namespace
-	if namespace == "" {
-		namespace = defaultNamespace
-	}
+	namespace := resolveNamespace(opts.namespace, defaultNamespace)
 
 	screen, err := tcell.NewScreen()
 	if err != nil {
@@ -119,13 +147,15 @@ func main() {
 		screen:     screen,
 		client:     client,
 		namespace:  namespace,
+		context:    opts.context,
 		interval:   opts.interval,
 		pods:       make(chan podResult, 1),
 		namespaces: make(chan namespaceResult, 1),
 		model: &ui.Model{
-			Namespace: namespace,
-			Context:   client.Context,
-			Interval:  opts.interval,
+			Namespace:  namespace,
+			Context:    client.Context,
+			Kubeconfig: client.Kubeconfig,
+			Interval:   opts.interval,
 		},
 	}
 
@@ -138,6 +168,15 @@ func main() {
 	}()
 
 	a.run()
+}
+
+func resolveNamespace(flag, fromConfig string) string {
+	for _, candidate := range []string{flag, fromConfig} {
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return "default"
 }
 
 func (a *app) fetchPods() {
@@ -279,9 +318,82 @@ func (a *app) focusNamespace() {
 	a.fetchNamespaces()
 }
 
+func (a *app) focusKubeconfig() {
+	a.model.Focus = ui.FocusKubeconfig
+	a.model.Choice = 0
+	if a.model.PathQuery == "" {
+		a.model.PathQuery = directoryOf(a.model.Kubeconfig)
+	}
+	a.refreshPaths()
+}
+
+func directoryOf(path string) string {
+	if path == "" {
+		return ""
+	}
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[:i+1]
+	}
+	return ""
+}
+
+func (a *app) refreshPaths() {
+	a.model.PathOptions = paths.Complete(a.model.PathQuery)
+	a.model.ClampChoice()
+}
+
+func (a *app) applyKubeconfig(path string) {
+	path = paths.Expand(strings.TrimSpace(path))
+	if path == "" {
+		a.model.Focus = ui.FocusTable
+		return
+	}
+
+	client, namespace, err := kube.NewWithPath(path, a.context)
+	if err != nil {
+		a.model.Err = err.Error()
+		return
+	}
+
+	a.client = client
+	a.namespace = namespace
+	a.model.Namespace = namespace
+	a.model.Context = client.Context
+	a.model.Kubeconfig = client.Kubeconfig
+	a.model.PathQuery = ""
+	a.model.PathOptions = nil
+	a.model.Namespaces = nil
+	a.model.NamespaceNote = ""
+	a.model.All = nil
+	a.model.Rows = nil
+	a.model.Err = ""
+	a.model.Note = ""
+	a.model.Cursor = 0
+	a.model.Offset = 0
+	a.model.Choice = 0
+	a.model.Focus = ui.FocusTable
+	a.fetchPods()
+	a.fetchNamespaces()
+}
+
 func (a *app) applyChoice() {
 	options := a.model.Options()
 	choice := a.model.Choice
+
+	if a.model.Focus == ui.FocusKubeconfig {
+		selected := a.model.PathQuery
+		if choice >= 0 && choice < len(options) {
+			selected = options[choice]
+		}
+		if paths.IsDir(selected) {
+			a.model.PathQuery = selected
+			a.model.Choice = 0
+			a.refreshPaths()
+			return
+		}
+		a.applyKubeconfig(selected)
+		return
+	}
 
 	if a.model.Focus == ui.FocusNamespace {
 		name := a.model.NamespaceQuery
@@ -321,13 +433,21 @@ func (a *app) complete(pods bool) bool {
 	if a.model.Choice < 0 || a.model.Choice >= len(options) {
 		return false
 	}
-	if pods {
-		a.model.PodQuery = options[a.model.Choice]
+	chosen := options[a.model.Choice]
+
+	switch a.model.Focus {
+	case ui.FocusKubeconfig:
+		a.model.PathQuery = chosen
+		a.model.Choice = 0
+		a.refreshPaths()
+	case ui.FocusPods:
+		a.model.PodQuery = chosen
 		a.reselect()
-	} else {
-		a.model.NamespaceQuery = options[a.model.Choice]
+		a.model.Choice = 0
+	default:
+		a.model.NamespaceQuery = chosen
+		a.model.Choice = 0
 	}
-	a.model.Choice = 0
 	return true
 }
 
@@ -343,6 +463,8 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 			a.focusNamespace()
 		case ui.HitPodInput:
 			a.focusPods()
+		case ui.HitKubeconfig:
+			a.focusKubeconfig()
 		case ui.HitDropdown:
 			a.model.Choice = index
 			a.applyChoice()
@@ -421,6 +543,8 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 			a.focusPods()
 		case 'n':
 			a.focusNamespace()
+		case 'c':
+			a.focusKubeconfig()
 		}
 	}
 	return false
@@ -428,12 +552,16 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 
 func (a *app) handleInputKey(e *tcell.EventKey) bool {
 	pods := a.model.Focus == ui.FocusPods
+	config := a.model.Focus == ui.FocusKubeconfig
 
 	switch e.Key() {
 	case tcell.KeyCtrlC:
 		return true
 	case tcell.KeyEscape:
-		if !pods {
+		if config {
+			a.model.PathQuery = ""
+			a.model.PathOptions = nil
+		} else if !pods {
 			a.model.NamespaceQuery = ""
 		}
 		a.model.Focus = ui.FocusTable
@@ -446,18 +574,26 @@ func (a *app) handleInputKey(e *tcell.EventKey) bool {
 	case tcell.KeyBacktab:
 		a.switchField(pods)
 	case tcell.KeyBackspace, tcell.KeyBackspace2, tcell.KeyDelete:
-		if pods {
+		switch {
+		case config:
+			a.model.PathQuery = trimLast(a.model.PathQuery)
+			a.refreshPaths()
+		case pods:
 			a.model.PodQuery = trimLast(a.model.PodQuery)
 			a.reselect()
-		} else {
+		default:
 			a.model.NamespaceQuery = trimLast(a.model.NamespaceQuery)
 		}
 		a.model.Choice = 0
 	case tcell.KeyCtrlU:
-		if pods {
+		switch {
+		case config:
+			a.model.PathQuery = ""
+			a.refreshPaths()
+		case pods:
 			a.model.PodQuery = ""
 			a.reselect()
-		} else {
+		default:
 			a.model.NamespaceQuery = ""
 		}
 		a.model.Choice = 0
@@ -470,10 +606,14 @@ func (a *app) handleInputKey(e *tcell.EventKey) bool {
 	case tcell.KeyPgDn:
 		a.model.Choice += 5
 	case tcell.KeyRune:
-		if pods {
+		switch {
+		case config:
+			a.model.PathQuery += string(e.Rune())
+			a.refreshPaths()
+		case pods:
 			a.model.PodQuery += string(e.Rune())
 			a.reselect()
-		} else {
+		default:
 			a.model.NamespaceQuery += string(e.Rune())
 		}
 		a.model.Choice = 0

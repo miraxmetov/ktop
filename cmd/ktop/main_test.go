@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +50,30 @@ func testApp(t *testing.T, names ...string) *app {
 	}
 	ui.ApplyFilter(a.model)
 	return a
+}
+
+func frame(t *testing.T, a *app) []string {
+	t.Helper()
+	ui.Draw(a.screen, *a.model)
+	sim, ok := a.screen.(tcell.SimulationScreen)
+	if !ok {
+		t.Fatal("simulation screen expected")
+	}
+	cells, w, h := sim.GetContents()
+	lines := make([]string, 0, h)
+	for y := 0; y < h; y++ {
+		var b strings.Builder
+		for x := 0; x < w; x++ {
+			runes := cells[y*w+x].Runes
+			if len(runes) == 0 {
+				b.WriteRune(' ')
+				continue
+			}
+			b.WriteRune(runes[0])
+		}
+		lines = append(lines, strings.TrimRight(b.String(), " "))
+	}
+	return lines
 }
 
 func press(a *app, key tcell.Key, r rune) bool {
@@ -442,5 +469,142 @@ func TestDropdownChoiceClampsToOptions(t *testing.T) {
 	typeText(a, "zzz")
 	if a.model.Choice != 0 {
 		t.Fatalf("typing must reset the choice, got %d", a.model.Choice)
+	}
+}
+
+func writeKubeconfig(t *testing.T, dir, name, namespace string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	body := "apiVersion: v1\nkind: Config\nclusters:\n- name: stub\n  cluster:\n    server: https://127.0.0.1:6443\n" +
+		"contexts:\n- name: stub\n  context:\n    cluster: stub\n    user: stub\n    namespace: " + namespace + "\n" +
+		"current-context: stub\nusers:\n- name: stub\n  user:\n    token: test\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+	return path
+}
+
+func TestKubeconfigFieldOpensOnKeyAndClick(t *testing.T) {
+	a := testApp(t, "api-1")
+	a.model.Kubeconfig = "/home/u/.kube/config"
+
+	press(a, tcell.KeyRune, 'c')
+	if a.model.Focus != ui.FocusKubeconfig {
+		t.Fatalf("c must open the kubeconfig field, got %v", a.model.Focus)
+	}
+	if a.model.PathQuery != "/home/u/.kube/" {
+		t.Fatalf("the field must start in the current directory, got %q", a.model.PathQuery)
+	}
+
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Focus != ui.FocusTable || a.model.PathQuery != "" {
+		t.Fatalf("Esc must close it: focus %v query %q", a.model.Focus, a.model.PathQuery)
+	}
+
+	lines := frame(t, a)
+	column := strings.Index(lines[0], "/home")
+	if column < 0 {
+		t.Fatalf("path not drawn: %q", lines[0])
+	}
+	click(a, column+2, 0)
+	if a.model.Focus != ui.FocusKubeconfig {
+		t.Fatalf("a click on the path must open the field, got %v", a.model.Focus)
+	}
+}
+
+func TestKubeconfigCompletionWalksDirectories(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "clusters"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeKubeconfig(t, filepath.Join(dir, "clusters"), "prod.yaml", "production")
+
+	a := testApp(t, "api-1")
+	a.model.Kubeconfig = filepath.Join(dir, "config")
+	press(a, tcell.KeyRune, 'c')
+
+	if len(a.model.PathOptions) == 0 {
+		t.Fatal("opening the field must list the directory")
+	}
+	if !strings.HasSuffix(a.model.PathOptions[0], "clusters/") {
+		t.Fatalf("directories come first, got %v", a.model.PathOptions)
+	}
+
+	press(a, tcell.KeyEnter, 0)
+	if a.model.Focus != ui.FocusKubeconfig {
+		t.Fatal("choosing a directory must keep the field open")
+	}
+	if !strings.HasSuffix(a.model.PathQuery, "clusters/") {
+		t.Fatalf("query must descend into the directory, got %q", a.model.PathQuery)
+	}
+	if len(a.model.PathOptions) != 1 || !strings.HasSuffix(a.model.PathOptions[0], "prod.yaml") {
+		t.Fatalf("options must follow the new directory, got %v", a.model.PathOptions)
+	}
+}
+
+func TestKubeconfigApplySwitchesConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := writeKubeconfig(t, dir, "prod.yaml", "payments")
+
+	a := testApp(t, "api-1")
+	a.model.Kubeconfig = filepath.Join(dir, "config")
+	press(a, tcell.KeyRune, 'c')
+	press(a, tcell.KeyEnter, 0)
+
+	if a.model.Kubeconfig != path {
+		t.Fatalf("kubeconfig after Enter: %q, want %q", a.model.Kubeconfig, path)
+	}
+	if a.namespace != "payments" || a.model.Namespace != "payments" {
+		t.Fatalf("namespace must come from the new kubeconfig, got %q", a.namespace)
+	}
+	if a.model.Focus != ui.FocusTable || a.model.PathQuery != "" {
+		t.Fatalf("the field must close: focus %v query %q", a.model.Focus, a.model.PathQuery)
+	}
+	if len(a.model.All) != 0 {
+		t.Fatal("rows of the previous cluster must be dropped")
+	}
+
+	select {
+	case res := <-a.pods:
+		if res.namespace != "payments" {
+			t.Fatalf("refresh asked for %q", res.namespace)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("switching kubeconfig must trigger a refresh")
+	}
+}
+
+func TestKubeconfigApplyKeepsWorkingOnBadPath(t *testing.T) {
+	a := testApp(t, "api-1")
+	before := a.client
+
+	press(a, tcell.KeyRune, 'c')
+	press(a, tcell.KeyCtrlU, 0)
+	typeText(a, "/definitely/not/a/kubeconfig.yaml")
+	press(a, tcell.KeyEnter, 0)
+
+	if a.model.Err == "" {
+		t.Fatal("a bad path must be reported")
+	}
+	if strings.Contains(a.model.Err, "&") || strings.Contains(a.model.Err, "0x") {
+		t.Errorf("the error must stay readable: %q", a.model.Err)
+	}
+	if a.client != before {
+		t.Error("a failed switch must keep the working client")
+	}
+}
+
+func TestResolveNamespacePrefersTheFlag(t *testing.T) {
+	cases := []struct {
+		flag, config, want string
+	}{
+		{"payments", "logging", "payments"},
+		{"", "logging", "logging"},
+		{"", "", "default"},
+	}
+	for _, c := range cases {
+		if got := resolveNamespace(c.flag, c.config); got != c.want {
+			t.Errorf("resolveNamespace(%q, %q) = %q, want %q", c.flag, c.config, got, c.want)
+		}
 	}
 }

@@ -52,11 +52,12 @@ type Row struct {
 }
 
 type Client struct {
-	pods    kubernetes.Interface
-	metrics metricsv.Interface
-	counts  *counters
-	Context string
-	Host    string
+	pods       kubernetes.Interface
+	metrics    metricsv.Interface
+	counts     *counters
+	Context    string
+	Host       string
+	Kubeconfig string
 }
 
 type Result struct {
@@ -74,7 +75,14 @@ var badWaiting = map[string]bool{
 }
 
 func New(contextName string) (*Client, string, error) {
+	return NewWithPath("", contextName)
+}
+
+func NewWithPath(path, contextName string) (*Client, string, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if path != "" {
+		rules.ExplicitPath = path
+	}
 	overrides := &clientcmd.ConfigOverrides{}
 	if contextName != "" {
 		overrides.CurrentContext = contextName
@@ -104,7 +112,13 @@ func New(contextName string) (*Client, string, error) {
 		return nil, namespace, errors.New(ExplainConfig(err))
 	}
 
-	client := &Client{pods: cs, metrics: ms, counts: newCounters(), Host: cfg.Host}
+	client := &Client{
+		pods:       cs,
+		metrics:    ms,
+		counts:     newCounters(),
+		Host:       cfg.Host,
+		Kubeconfig: kubeconfigPath(rules),
+	}
 	if raw, err := cc.RawConfig(); err == nil {
 		client.Context = raw.CurrentContext
 		if contextName != "" {
@@ -112,6 +126,18 @@ func New(contextName string) (*Client, string, error) {
 		}
 	}
 	return client, namespace, nil
+}
+
+func kubeconfigPath(rules *clientcmd.ClientConfigLoadingRules) string {
+	if rules.ExplicitPath != "" {
+		return rules.ExplicitPath
+	}
+	for _, candidate := range rules.Precedence {
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func NewWithClients(pods kubernetes.Interface, metrics metricsv.Interface) *Client {

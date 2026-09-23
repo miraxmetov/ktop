@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -79,7 +80,7 @@ func draw(t *testing.T, width, height int, m Model) ([]string, tcell.SimulationS
 func TestDrawHeaderShowsNamespaceAndSearchBars(t *testing.T) {
 	lines, _ := draw(t, 170, 40, model(sample(3)))
 
-	if lines[lineTitle] != "Current namespace: production" {
+	if !strings.HasPrefix(lines[lineTitle], "Current namespace: production") {
 		t.Errorf("namespace line: %q", lines[lineTitle])
 	}
 	if lines[lineNs] != "Search for namespaces..." {
@@ -387,13 +388,13 @@ func TestDrawScrollsAndMarksCursor(t *testing.T) {
 
 	cells, w, _ := screen.GetContents()
 	cursorY := rowTop + (12 - 10)
-	_, _, attrs := cells[cursorY*w].Style.Decompose()
-	if attrs&tcell.AttrReverse == 0 {
-		t.Errorf("cursor row %d is not highlighted", cursorY)
+	for x := 0; x < 40; x++ {
+		if _, bg, _ := cells[cursorY*w+x].Style.Decompose(); bg != tcell.Color236 {
+			t.Fatalf("selected row must be shaded across its full width, column %d has %v", x, bg)
+		}
 	}
-	_, _, plain := cells[(cursorY+1)*w].Style.Decompose()
-	if plain&tcell.AttrReverse != 0 {
-		t.Error("non-cursor row must not be highlighted")
+	if _, bg, _ := cells[(cursorY+1)*w].Style.Decompose(); bg == tcell.Color236 {
+		t.Error("only the selected row may be shaded")
 	}
 }
 
@@ -475,8 +476,8 @@ func TestAgo(t *testing.T) {
 	}
 }
 
-func TestDrawCounterColumnsAndHint(t *testing.T) {
-	lines, screen := draw(t, 170, 40, model(sample(3)))
+func TestDrawCounterColumns(t *testing.T) {
+	lines, _ := draw(t, 170, 40, model(sample(3)))
 
 	if !strings.Contains(lines[lineHeader], "RESTART CTR") {
 		t.Errorf("restart column title: %q", lines[lineHeader])
@@ -484,22 +485,8 @@ func TestDrawCounterColumnsAndHint(t *testing.T) {
 	if !strings.Contains(lines[lineHeader], "OOM CTR") {
 		t.Errorf("oom column title: %q", lines[lineHeader])
 	}
-	if strings.Contains(lines[lineHeader], " REST ") {
-		t.Errorf("old restart title still drawn: %q", lines[lineHeader])
-	}
-
-	hint := lines[38]
-	if !strings.Contains(hint, "since ktop started") {
-		t.Errorf("counter hint above the footer: %q", hint)
-	}
-	if !strings.Contains(hint, "RESTART CTR") || !strings.Contains(hint, "OOM CTR") {
-		t.Errorf("hint must name both counters: %q", hint)
-	}
-
-	cells, w, _ := screen.GetContents()
-	fg, _, _ := cells[38*w].Style.Decompose()
-	if fg != tcell.ColorGray {
-		t.Errorf("hint must be dim gray, got %v", fg)
+	if strings.Contains(strings.Join(lines, "\n"), "since ktop started") {
+		t.Error("the counter hint line must be gone")
 	}
 	if !strings.Contains(lines[39], "q quit") {
 		t.Errorf("footer must stay on the last line: %q", lines[39])
@@ -532,17 +519,6 @@ func TestDrawRestartCounterShowsTotalAndSessionDelta(t *testing.T) {
 	}
 }
 
-func TestCounterHintExplainsBothNumbers(t *testing.T) {
-	lines, _ := draw(t, 170, 40, model(sample(1)))
-	hint := lines[38]
-
-	for _, want := range []string{"RESTART CTR", "own total", "+N", "since ktop started", "OOM CTR"} {
-		if !strings.Contains(hint, want) {
-			t.Errorf("hint must mention %q: %q", want, hint)
-		}
-	}
-}
-
 func TestFooterDropsTheRefreshKey(t *testing.T) {
 	lines, _ := draw(t, 170, 40, model(sample(2)))
 	footer := lines[39]
@@ -562,5 +538,113 @@ func TestFooterDropsTheRefreshKey(t *testing.T) {
 	}
 	if !strings.Contains(open[39], "click away") {
 		t.Errorf("input footer must mention closing by click: %q", open[39])
+	}
+}
+
+func TestDrawShowsKubeconfigPathOnTheTitleLine(t *testing.T) {
+	m := model(sample(2))
+	m.Kubeconfig = "/Users/somebody/.kube/prod.yaml"
+
+	lines, screen := draw(t, 170, 40, m)
+	title := lines[lineTitle]
+
+	if !strings.HasPrefix(title, "Current namespace: production") {
+		t.Errorf("namespace must stay on the left: %q", title)
+	}
+	if !strings.HasSuffix(title, "/.kube/prod.yaml") {
+		t.Errorf("kubeconfig path must sit on the right: %q", title)
+	}
+
+	cells, w, _ := screen.GetContents()
+	column := strings.Index(title, "/Users")
+	fg, _, attrs := cells[lineTitle*w+column].Style.Decompose()
+	if fg != tcell.ColorTeal || attrs&tcell.AttrUnderline == 0 {
+		t.Errorf("the path must look clickable, got colour %v attrs %v", fg, attrs)
+	}
+}
+
+func TestShortPathUsesTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	if got := ShortPath(home + "/.kube/config"); got != "~/.kube/config" {
+		t.Errorf("ShortPath = %q", got)
+	}
+	if got := ShortPath("/etc/kubeconfig"); got != "/etc/kubeconfig" {
+		t.Errorf("ShortPath = %q", got)
+	}
+	if got := ShortPath(""); got != "no kubeconfig" {
+		t.Errorf("ShortPath = %q", got)
+	}
+}
+
+func TestDrawKubeconfigInputAndItsDropdown(t *testing.T) {
+	m := model(sample(2))
+	m.Kubeconfig = "/home/u/.kube/config"
+	m.Focus = FocusKubeconfig
+	m.PathQuery = "/home/u/.kube/"
+	m.PathOptions = []string{"/home/u/.kube/cache/", "/home/u/.kube/config", "/home/u/.kube/prod.yaml"}
+
+	lines, _ := draw(t, 170, 40, m)
+
+	if !strings.Contains(lines[lineTitle], "/home/u/.kube/") {
+		t.Errorf("typed path must be shown: %q", lines[lineTitle])
+	}
+	listed := strings.Join(lines[lineTitle+1:lineTitle+6], "\n")
+	for _, want := range []string{"cache/", "config", "prod.yaml"} {
+		if !strings.Contains(listed, want) {
+			t.Errorf("dropdown missing %q:\n%s", want, listed)
+		}
+	}
+	if strings.Contains(listed, "/home/u/.kube/config") {
+		t.Errorf("the list must show names, not full paths:\n%s", listed)
+	}
+}
+
+func TestHitFindsTheKubeconfigPath(t *testing.T) {
+	m := model(sample(2))
+	m.Kubeconfig = "/home/u/.kube/config"
+
+	lines, _ := draw(t, 170, 40, m)
+	column := strings.Index(lines[lineTitle], "/home")
+	if column < 0 {
+		t.Fatalf("path not drawn: %q", lines[lineTitle])
+	}
+	if target, _ := Hit(m, 170, 40, column+3, lineTitle); target != HitKubeconfig {
+		t.Errorf("click on the path: %v", target)
+	}
+	if target, _ := Hit(m, 170, 40, 2, lineTitle); target != HitNone {
+		t.Errorf("click on the namespace label must do nothing: %v", target)
+	}
+}
+
+func TestTableFillsTheTerminalWidth(t *testing.T) {
+	for _, width := range []int{120, 170, 220, 300} {
+		lines, _ := draw(t, width, 30, model(sample(4)))
+
+		rule := lines[lineRule]
+		if len([]rune(rule)) < width-1 {
+			t.Errorf("width %d: the table stops at %d columns", width, len([]rune(rule)))
+		}
+		if len([]rune(rule)) > width {
+			t.Errorf("width %d: the table overflows to %d columns", width, len([]rune(rule)))
+		}
+	}
+}
+
+func TestSelectedRowIsShadedToTheScreenEdge(t *testing.T) {
+	m := model(sample(4))
+	m.Cursor = 1
+
+	width := 220
+	_, screen := draw(t, width, 30, m)
+	cells, w, _ := screen.GetContents()
+	y := rowTop + 1
+
+	for x := 0; x < width-1; x++ {
+		if _, bg, _ := cells[y*w+x].Style.Decompose(); bg != tcell.Color236 {
+			t.Fatalf("column %d of the selected row is not shaded", x)
+		}
 	}
 }

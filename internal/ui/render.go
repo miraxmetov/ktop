@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -10,20 +12,21 @@ import (
 )
 
 const (
-	gap         = 2
-	minName     = 20
-	maxName     = 56
-	lineTitle   = 0
-	lineNs      = 1
-	lineStatus  = 3
-	linePods    = 5
-	lineHeader  = 7
-	lineRule    = 8
-	rowTop      = 9
-	overhead    = 11
-	nsInnerMin  = 24
-	podInnerMin = 30
-	dropMax     = 8
+	gap          = 2
+	minName      = 20
+	maxName      = 56
+	lineTitle    = 0
+	lineNs       = 1
+	lineStatus   = 3
+	linePods     = 5
+	lineHeader   = 7
+	lineRule     = 8
+	rowTop       = 9
+	overhead     = 11
+	nsInnerMin   = 24
+	podInnerMin  = 30
+	kubeInnerMin = 30
+	dropMax      = 8
 )
 
 type Focus int
@@ -32,6 +35,7 @@ const (
 	FocusTable Focus = iota
 	FocusPods
 	FocusNamespace
+	FocusKubeconfig
 )
 
 type Target int
@@ -40,6 +44,7 @@ const (
 	HitNone Target = iota
 	HitNamespaceInput
 	HitPodInput
+	HitKubeconfig
 	HitDropdown
 	HitRow
 )
@@ -57,12 +62,17 @@ var (
 	stylePlace    = tcell.StyleDefault.Foreground(tcell.ColorGray).Italic(true)
 	styleFocused  = tcell.StyleDefault.Foreground(tcell.ColorTeal).Bold(true)
 	styleCursor   = tcell.StyleDefault.Reverse(true)
+	styleSelected = tcell.StyleDefault.Background(tcell.Color236)
+	styleKube     = tcell.StyleDefault.Foreground(tcell.ColorTeal).Underline(true)
 	styleDropdown = tcell.StyleDefault.Foreground(tcell.ColorWhite)
 )
 
 type Model struct {
 	Namespace      string
 	Context        string
+	Kubeconfig     string
+	PathQuery      string
+	PathOptions    []string
 	All            []kube.Row
 	Rows           []kube.Row
 	PodQuery       string
@@ -109,6 +119,8 @@ func (m *Model) Options() []string {
 		return m.NamespaceMatches()
 	case FocusPods:
 		return m.PodMatches()
+	case FocusKubeconfig:
+		return m.PathOptions
 	}
 	return nil
 }
@@ -279,20 +291,32 @@ func RestartText(t time.Time, now time.Time) string {
 }
 
 type geometry struct {
-	cols     []column
-	widths   []int
-	total    int
-	nsInput  rect
-	podInput rect
-	dropdown rect
-	options  []string
-	room     int
+	cols      []column
+	widths    []int
+	total     int
+	nsInput   rect
+	podInput  rect
+	kubeInput rect
+	dropdown  rect
+	options   []string
+	room      int
 }
 
 const (
-	podPlaceholder = "Search for pods..."
-	nsPlaceholder  = "Search for namespaces..."
+	podPlaceholder  = "Search for pods..."
+	nsPlaceholder   = "Search for namespaces..."
+	kubePlaceholder = "Path to kubeconfig..."
 )
+
+func ShortPath(path string) string {
+	if path == "" {
+		return "no kubeconfig"
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(path, home+"/") {
+		return "~" + path[len(home):]
+	}
+	return path
+}
 
 func inputWidth(text, hint string, minInner int) int {
 	shown := text
@@ -325,9 +349,6 @@ func geom(m Model, width, height int) geometry {
 
 	fixed := fixedWidth(cols)
 	nameWidth := width - fixed - 1
-	if nameWidth > maxName {
-		nameWidth = maxName
-	}
 	if nameWidth < 8 {
 		nameWidth = 8
 	}
@@ -354,11 +375,27 @@ func geom(m Model, width, height int) geometry {
 		w: inputWidth(m.PodQuery, podPlaceholder, podInnerMin),
 	}
 
+	kubeWidth := len([]rune(ShortPath(m.Kubeconfig)))
+	if m.Focus == FocusKubeconfig {
+		kubeWidth = inputWidth(m.PathQuery, kubePlaceholder, kubeInnerMin)
+	}
+	kubeX := total - kubeWidth
+	if minX := len([]rune("Current namespace: "+m.Namespace)) + 2; kubeX < minX {
+		kubeX = minX
+	}
+	if kubeX+kubeWidth > width {
+		kubeX = max(0, width-kubeWidth)
+	}
+	g.kubeInput = rect{x: kubeX, y: lineTitle, w: kubeWidth, h: 1}
+
 	if m.Focus != FocusTable {
 		g.options = m.Options()
 		anchor := g.nsInput
-		if m.Focus == FocusPods {
+		switch m.Focus {
+		case FocusPods:
 			anchor = g.podInput
+		case FocusKubeconfig:
+			anchor = g.kubeInput
 		}
 		rows := len(g.options)
 		if rows > dropMax {
@@ -369,12 +406,16 @@ func geom(m Model, width, height int) geometry {
 		}
 		boxWidth := anchor.w
 		for _, item := range g.options[:min(len(g.options), dropMax)] {
-			if w := len([]rune(item)) + 4; w > boxWidth {
+			if w := len([]rune(optionLabel(m.Focus, item))) + 4; w > boxWidth {
 				boxWidth = w
 			}
 		}
 		if boxWidth > width {
 			boxWidth = width
+		}
+		boxX := anchor.x
+		if boxX+boxWidth > width {
+			boxX = max(0, width-boxWidth)
 		}
 		available := height - anchor.y - 3
 		if rows+2 > available {
@@ -383,7 +424,7 @@ func geom(m Model, width, height int) geometry {
 		if rows < 1 {
 			rows = 1
 		}
-		g.dropdown = rect{x: anchor.x, y: anchor.y + 1, w: boxWidth, h: rows + 2}
+		g.dropdown = rect{x: boxX, y: anchor.y + 1, w: boxWidth, h: rows + 2}
 	}
 	return g
 }
@@ -420,6 +461,9 @@ func Hit(m Model, width, height, x, y int) (Target, int) {
 	if g.podInput.contains(x, y) {
 		return HitPodInput, 0
 	}
+	if g.kubeInput.contains(x, y) {
+		return HitKubeconfig, 0
+	}
 	if y >= rowTop && y < rowTop+g.room && x < g.total {
 		index := m.Offset + (y - rowTop)
 		if index < len(m.Rows) {
@@ -455,7 +499,7 @@ func puts(s tcell.Screen, x, y, width int, right bool, text string, style tcell.
 	}
 	if right {
 		for i := 0; i < pad; i++ {
-			s.SetContent(x+i, y, ' ', nil, styleBase)
+			s.SetContent(x+i, y, ' ', nil, style)
 		}
 		x += pad
 	}
@@ -464,7 +508,7 @@ func puts(s tcell.Screen, x, y, width int, right bool, text string, style tcell.
 	}
 	if !right {
 		for i := 0; i < pad; i++ {
-			s.SetContent(x+len(runes)+i, y, ' ', nil, styleBase)
+			s.SetContent(x+len(runes)+i, y, ' ', nil, style)
 		}
 	}
 	if width > 0 {
@@ -511,12 +555,12 @@ func drawDropdown(s tcell.Screen, g geometry, m Model) {
 		index := offset + i
 		style := styleDropdown
 		if index == m.Choice {
-			style = styleCursor
+			style = styleSelected
 		}
 		puts(s, box.x, y, 0, false, "│", styleDim)
 		text := ""
 		if index < len(g.options) {
-			text = " " + g.options[index]
+			text = " " + optionLabel(m.Focus, g.options[index])
 		} else if len(g.options) == 0 && i == 0 {
 			text = " no match"
 			style = styleDim
@@ -533,6 +577,17 @@ func drawDropdown(s tcell.Screen, g geometry, m Model) {
 	if more != "" && box.w > len([]rune(more))+4 {
 		puts(s, box.x+2, box.y+box.h-1, 0, false, more, styleDim)
 	}
+}
+
+func optionLabel(focus Focus, option string) string {
+	if focus != FocusKubeconfig {
+		return option
+	}
+	trimmed := strings.TrimSuffix(option, "/")
+	if i := strings.LastIndex(trimmed, "/"); i >= 0 {
+		return option[i+1:]
+	}
+	return option
 }
 
 func repeat(s string, n int) string {
@@ -555,6 +610,12 @@ func Draw(s tcell.Screen, m Model) {
 
 	x := puts(s, 0, lineTitle, 0, false, "Current namespace: ", styleDim)
 	puts(s, x, lineTitle, 0, false, m.Namespace, styleTitle)
+
+	if m.Focus == FocusKubeconfig {
+		drawInput(s, g.kubeInput, m.PathQuery, kubePlaceholder, true)
+	} else {
+		puts(s, g.kubeInput.x, lineTitle, 0, false, ShortPath(m.Kubeconfig), styleKube)
+	}
 
 	drawInput(s, g.nsInput, m.NamespaceQuery, nsPlaceholder, m.Focus == FocusNamespace)
 	if m.Focus == FocusNamespace && m.NamespaceNote != "" {
@@ -631,10 +692,10 @@ func Draw(s tcell.Screen, m Model) {
 	for i := 0; i < g.room && offset+i < len(m.Rows); i++ {
 		row := m.Rows[offset+i]
 		y := rowTop + i
-		selected := offset+i == m.Cursor && m.Focus == FocusTable
+		selected := offset+i == m.Cursor
 		if selected {
 			for cx := 0; cx < total; cx++ {
-				s.SetContent(cx, y, ' ', nil, styleCursor)
+				s.SetContent(cx, y, ' ', nil, styleSelected)
 			}
 		}
 		x = 0
@@ -644,12 +705,12 @@ func Draw(s tcell.Screen, m Model) {
 				text = RestartText(row.LastRestart, now)
 			}
 			if selected {
-				style = style.Reverse(true)
+				style = style.Background(tcell.Color236)
 			}
 			x += puts(s, x, y, g.widths[ci], c.right, text, style)
 			if selected {
 				for gp := 0; gp < gap && x+gp < total; gp++ {
-					s.SetContent(x+gp, y, ' ', nil, styleCursor)
+					s.SetContent(x+gp, y, ' ', nil, styleSelected)
 				}
 			}
 			x += gap
@@ -662,20 +723,17 @@ func Draw(s tcell.Screen, m Model) {
 	if hidden < 0 {
 		hidden = 0
 	}
-	footer := fmt.Sprintf("/ search pods  %s  n namespace  %s  click to focus  %s  q quit  %s  refreshes every %s",
-		dot, dot, dot, dot, m.Interval.String())
+	footer := fmt.Sprintf("/ search pods  %s  n namespace  %s  c kubeconfig  %s  click to focus  %s  q quit  %s  refreshes every %s",
+		dot, dot, dot, dot, dot, m.Interval.String())
 	if m.Focus != FocusTable {
 		footer = fmt.Sprintf("%s%s choose  %s  Tab complete  %s  Enter apply  %s  Esc or click away  %s  Shift+Tab switch field",
 			arrowUp, arrowDown, dot, dot, dot, dot)
 	} else if hidden > 0 {
 		footer = fmt.Sprintf("+%d more  %s  %s", hidden, dot, footer)
 	}
-	puts(s, 0, height-2, 0, false, truncate(counterHint, total), styleDim)
 	puts(s, 0, height-1, 0, false, truncate(footer, total), styleDim)
 	s.Show()
 }
-
-const counterHint = "RESTART CTR is the pod's own total, +N is what happened since ktop started · OOM CTR counts only what ktop saw"
 
 const (
 	dot       = "·"

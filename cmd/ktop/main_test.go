@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,8 +45,8 @@ func testApp(t *testing.T, names ...string) *app {
 		namespaces: make(chan namespaceResult, 4),
 		model: &ui.Model{
 			Namespace: "production",
-			Interval:  2 * time.Second,
 			All:       rows,
+			Cursor:    noSelection,
 		},
 	}
 	ui.ApplyFilter(a.model)
@@ -116,6 +117,14 @@ func TestPodSearchFiltersAndRestoresTable(t *testing.T) {
 	if len(a.model.Rows) != 2 {
 		t.Fatalf("filter must survive Enter, got %d rows", len(a.model.Rows))
 	}
+	if a.model.Cursor != 0 {
+		t.Fatalf("Enter must land on the highlighted pod, got %d", a.model.Cursor)
+	}
+
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Cursor != noSelection {
+		t.Fatalf("the first Esc drops the selection, got %d", a.model.Cursor)
+	}
 
 	press(a, tcell.KeyEscape, 0)
 	if a.model.PodQuery != "" || len(a.model.Rows) != 4 {
@@ -165,7 +174,7 @@ func TestNamespaceSearchSwitchesNamespace(t *testing.T) {
 	if a.model.NamespaceQuery != "" || a.model.Focus != ui.FocusTable {
 		t.Fatalf("input must reset: query %q focus %v", a.model.NamespaceQuery, a.model.Focus)
 	}
-	if len(a.model.All) != 0 || a.model.Cursor != 0 {
+	if len(a.model.All) != 0 || a.model.Cursor != noSelection {
 		t.Fatal("rows of the previous namespace must be dropped")
 	}
 
@@ -239,8 +248,8 @@ func TestRefreshKeepsCursorOnTheSamePod(t *testing.T) {
 
 	a.model.All = []kube.Row{{Name: "api-3", CPUPct: -1, MemPct: -1, Worst: -1}}
 	a.reselect()
-	if a.model.Cursor != 0 {
-		t.Fatalf("cursor must clamp when the pod is gone, got %d", a.model.Cursor)
+	if a.model.Cursor != noSelection {
+		t.Fatalf("a vanished pod must leave nothing selected, got %d", a.model.Cursor)
 	}
 }
 
@@ -376,12 +385,13 @@ func click(a *app, x, y int) {
 func TestClickFocusesSearchFields(t *testing.T) {
 	a := testApp(t, "api-1", "web-1")
 
-	click(a, 3, 1)
+	click(a, 3, 2)
 	if a.model.Focus != ui.FocusNamespace {
 		t.Fatalf("click on the namespace box: focus %v", a.model.Focus)
 	}
 
-	click(a, 3, 5)
+	press(a, tcell.KeyEscape, 0)
+	click(a, 3, 7)
 	if a.model.Focus != ui.FocusPods {
 		t.Fatalf("click on the pod box: focus %v", a.model.Focus)
 	}
@@ -391,8 +401,8 @@ func TestClickOnDropdownSwitchesNamespace(t *testing.T) {
 	a := testApp(t, "api-1")
 	a.model.Namespaces = []string{"default", "production", "staging"}
 
-	click(a, 3, 1)
-	click(a, 3, 5)
+	click(a, 3, 3)
+	click(a, 3, 8)
 
 	if a.namespace != "staging" {
 		t.Fatalf("clicking the third item must switch to staging, got %q", a.namespace)
@@ -405,7 +415,7 @@ func TestClickOnDropdownSwitchesNamespace(t *testing.T) {
 func TestClickOnRowMovesCursor(t *testing.T) {
 	a := testApp(t, "api-1", "api-2", "web-1", "cache-1")
 
-	click(a, 4, 9+2)
+	click(a, 4, 11+2)
 	if a.model.Cursor != 2 {
 		t.Fatalf("cursor after the click: %d", a.model.Cursor)
 	}
@@ -414,20 +424,73 @@ func TestClickOnRowMovesCursor(t *testing.T) {
 	}
 }
 
-func TestWheelScrollsTableAndDropdown(t *testing.T) {
-	a := testApp(t, "a-1", "a-2", "a-3", "a-4", "a-5")
-	a.model.Cursor = 4
+func TestWheelScrollsWithoutSelecting(t *testing.T) {
+	names := make([]string, 0, 40)
+	for i := 0; i < 40; i++ {
+		names = append(names, fmt.Sprintf("pod-%02d", i))
+	}
+	a := testApp(t, names...)
+
+	a.handleMouse(tcell.NewEventMouse(5, 12, tcell.WheelDown, tcell.ModNone))
+	a.clamp()
+	if a.model.Offset != 1 {
+		t.Fatalf("one notch must scroll one row, got offset %d", a.model.Offset)
+	}
+	if a.model.Cursor != noSelection {
+		t.Fatalf("scrolling must not select anything, got %d", a.model.Cursor)
+	}
 
 	a.handleMouse(tcell.NewEventMouse(5, 12, tcell.WheelUp, tcell.ModNone))
 	a.clamp()
-	if a.model.Cursor != 1 {
-		t.Fatalf("wheel up must move the cursor by three, got %d", a.model.Cursor)
+	if a.model.Offset != 0 {
+		t.Fatalf("offset after scrolling back: %d", a.model.Offset)
 	}
 
 	press(a, tcell.KeyRune, '/')
-	a.handleMouse(tcell.NewEventMouse(5, 6, tcell.WheelDown, tcell.ModNone))
+	a.handleMouse(tcell.NewEventMouse(5, 8, tcell.WheelDown, tcell.ModNone))
 	if a.model.Choice != 1 {
 		t.Fatalf("wheel inside the dropdown must move the choice, got %d", a.model.Choice)
+	}
+}
+
+func TestNothingIsSelectedUntilYouAskForIt(t *testing.T) {
+	a := testApp(t, "api-1", "api-2", "web-1")
+
+	if a.model.Cursor != noSelection {
+		t.Fatalf("a fresh table must have no selection, got %d", a.model.Cursor)
+	}
+
+	click(a, 4, 11)
+	if a.model.Cursor != 0 || a.model.SelectedName() != "api-1" {
+		t.Fatalf("a click must select that row, got %d %q", a.model.Cursor, a.model.SelectedName())
+	}
+
+	if quit := press(a, tcell.KeyEscape, 0); quit {
+		t.Fatal("Esc must drop the selection first")
+	}
+	if a.model.Cursor != noSelection {
+		t.Fatalf("Esc must clear the selection, got %d", a.model.Cursor)
+	}
+}
+
+func TestArrowsStartTheSelectionAtTheTopOfTheView(t *testing.T) {
+	names := make([]string, 0, 40)
+	for i := 0; i < 40; i++ {
+		names = append(names, fmt.Sprintf("pod-%02d", i))
+	}
+	a := testApp(t, names...)
+
+	a.handleMouse(tcell.NewEventMouse(5, 12, tcell.WheelDown, tcell.ModNone))
+	a.handleMouse(tcell.NewEventMouse(5, 12, tcell.WheelDown, tcell.ModNone))
+	a.clamp()
+
+	press(a, tcell.KeyDown, 0)
+	if a.model.SelectedName() != "pod-02" {
+		t.Fatalf("the first arrow selects the top visible row, got %q", a.model.SelectedName())
+	}
+	press(a, tcell.KeyDown, 0)
+	if a.model.SelectedName() != "pod-03" {
+		t.Fatalf("the next arrow steps one row, got %q", a.model.SelectedName())
 	}
 }
 
@@ -502,11 +565,11 @@ func TestKubeconfigFieldOpensOnKeyAndClick(t *testing.T) {
 	}
 
 	lines := frame(t, a)
-	column := strings.Index(lines[0], "/home")
+	column := strings.Index(lines[1], "/home")
 	if column < 0 {
-		t.Fatalf("path not drawn: %q", lines[0])
+		t.Fatalf("path not drawn: %q", lines[1])
 	}
-	click(a, column+2, 0)
+	click(a, column+2, 1)
 	if a.model.Focus != ui.FocusKubeconfig {
 		t.Fatalf("a click on the path must open the field, got %v", a.model.Focus)
 	}
@@ -606,5 +669,174 @@ func TestResolveNamespacePrefersTheFlag(t *testing.T) {
 		if got := resolveNamespace(c.flag, c.config); got != c.want {
 			t.Errorf("resolveNamespace(%q, %q) = %q, want %q", c.flag, c.config, got, c.want)
 		}
+	}
+}
+
+func TestFooterKeysWorkInBothCases(t *testing.T) {
+	a := testApp(t, "api-1")
+
+	press(a, tcell.KeyRune, 'N')
+	if a.model.Focus != ui.FocusNamespace {
+		t.Fatalf("N must open the namespace search, got %v", a.model.Focus)
+	}
+	press(a, tcell.KeyEscape, 0)
+
+	press(a, tcell.KeyRune, 'C')
+	if a.model.Focus != ui.FocusKubeconfig {
+		t.Fatalf("C must open the kubeconfig field, got %v", a.model.Focus)
+	}
+	press(a, tcell.KeyEscape, 0)
+
+	if quit := press(a, tcell.KeyRune, 'Q'); !quit {
+		t.Fatal("Q must quit")
+	}
+}
+
+func hotApp(t *testing.T) *app {
+	t.Helper()
+	a := testApp(t)
+	a.model.All = []kube.Row{
+		{Name: "hot-1", Worst: 96, CPUPct: 96, MemPct: 40},
+		{Name: "hot-2", Worst: 91, CPUPct: 91, MemPct: 30},
+		{Name: "warm-1", Worst: 80, CPUPct: 80, MemPct: 20},
+		{Name: "calm-1", Worst: 12, CPUPct: 12, MemPct: 10},
+	}
+	ui.ApplyFilter(a.model)
+	return a
+}
+
+func TestClickOnCountersFiltersTheTable(t *testing.T) {
+	a := hotApp(t)
+	g := ui.Geometry(*a.model, 170, 40)
+
+	click(a, g.Critical.X+1, g.Critical.Y)
+	if len(a.model.Rows) != 2 {
+		t.Fatalf("critical filter must leave 2 rows, got %d", len(a.model.Rows))
+	}
+	for _, row := range a.model.Rows {
+		if !strings.HasPrefix(row.Name, "hot-") {
+			t.Fatalf("unexpected row %q", row.Name)
+		}
+	}
+
+	click(a, g.Warning.X+1, g.Warning.Y)
+	if len(a.model.Rows) != 1 || a.model.Rows[0].Name != "warm-1" {
+		t.Fatalf("warning filter: %v", a.model.Rows)
+	}
+
+	click(a, g.Warning.X+1, g.Warning.Y)
+	if len(a.model.Rows) != 4 {
+		t.Fatalf("clicking the active counter must clear the filter, got %d rows", len(a.model.Rows))
+	}
+}
+
+func TestEscapeClearsTheLevelFilter(t *testing.T) {
+	a := hotApp(t)
+	g := ui.Geometry(*a.model, 170, 40)
+
+	click(a, g.Critical.X+1, g.Critical.Y)
+	if quit := press(a, tcell.KeyEscape, 0); quit {
+		t.Fatal("Esc must clear the filter before quitting")
+	}
+	if len(a.model.Rows) != 4 {
+		t.Fatalf("filter must be gone, got %d rows", len(a.model.Rows))
+	}
+	if quit := press(a, tcell.KeyEscape, 0); !quit {
+		t.Fatal("a second Esc quits")
+	}
+}
+
+func TestLevelFilterSurvivesRefresh(t *testing.T) {
+	a := hotApp(t)
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.Critical.X+1, g.Critical.Y)
+
+	a.model.All = []kube.Row{
+		{Name: "hot-3", Worst: 99, CPUPct: 99, MemPct: 50},
+		{Name: "calm-2", Worst: 5, CPUPct: 5, MemPct: 5},
+	}
+	a.reselect()
+
+	if len(a.model.Rows) != 1 || a.model.Rows[0].Name != "hot-3" {
+		t.Fatalf("the filter must be re-applied to fresh rows, got %v", a.model.Rows)
+	}
+}
+
+func TestClickOnDimensionsNarrowsWhatTheCountersMean(t *testing.T) {
+	a := testApp(t)
+	a.model.All = []kube.Row{
+		{Name: "crashing", Severity: kube.Bad, CPUPct: 5, MemPct: 5, Worst: 5},
+		{Name: "cpu-hot", Severity: kube.Good, CPUPct: 95, MemPct: 5, Worst: 95},
+		{Name: "mem-warm", Severity: kube.Good, CPUPct: 5, MemPct: 80, Worst: 80},
+		{Name: "calm", Severity: kube.Good, CPUPct: 5, MemPct: 5, Worst: 5},
+	}
+	ui.ApplyFilter(a.model)
+
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.DimStatus.X+1, g.DimStatus.Y)
+	if a.model.Dimension != kube.DimStatus {
+		t.Fatalf("dimension: %v", a.model.Dimension)
+	}
+	if len(a.model.Rows) != 4 {
+		t.Fatalf("a dimension alone must not filter, got %d rows", len(a.model.Rows))
+	}
+
+	g = ui.Geometry(*a.model, 170, 40)
+	click(a, g.Critical.X+1, g.Critical.Y)
+	if len(a.model.Rows) != 1 || a.model.Rows[0].Name != "crashing" {
+		t.Fatalf("critical by status: %v", a.model.Rows)
+	}
+
+	g = ui.Geometry(*a.model, 170, 40)
+	click(a, g.DimMemory.X+1, g.DimMemory.Y)
+	if a.model.Dimension != kube.DimMemory {
+		t.Fatalf("dimension: %v", a.model.Dimension)
+	}
+	if len(a.model.Rows) != 0 {
+		t.Fatalf("nothing is memory-critical here, got %v", a.model.Rows)
+	}
+
+	g = ui.Geometry(*a.model, 170, 40)
+	click(a, g.Warning.X+1, g.Warning.Y)
+	if len(a.model.Rows) != 1 || a.model.Rows[0].Name != "mem-warm" {
+		t.Fatalf("warning by memory: %v", a.model.Rows)
+	}
+}
+
+func TestSecondClickClearsTheDimension(t *testing.T) {
+	a := hotApp(t)
+
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.DimCPU.X+1, g.DimCPU.Y)
+	if a.model.Dimension != kube.DimCPU {
+		t.Fatalf("dimension: %v", a.model.Dimension)
+	}
+
+	g = ui.Geometry(*a.model, 170, 40)
+	click(a, g.DimCPU.X+1, g.DimCPU.Y)
+	if a.model.Dimension != kube.DimAll {
+		t.Fatalf("a second click must clear it, got %v", a.model.Dimension)
+	}
+	if len(a.model.Rows) != 4 {
+		t.Fatalf("every pod must come back, got %d", len(a.model.Rows))
+	}
+}
+
+func TestEscapeClearsDimensionAndLevel(t *testing.T) {
+	a := hotApp(t)
+
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.DimCPU.X+1, g.DimCPU.Y)
+	g = ui.Geometry(*a.model, 170, 40)
+	click(a, g.Critical.X+1, g.Critical.Y)
+
+	if quit := press(a, tcell.KeyEscape, 0); quit {
+		t.Fatal("Esc must clear the selection first")
+	}
+	if a.model.Dimension != kube.DimAll || a.model.Level != kube.LevelAll {
+		t.Fatalf("selection after Esc: dimension %v level %v", a.model.Dimension, a.model.Level)
+	}
+	if len(a.model.Rows) != 4 {
+		t.Fatalf("every pod must come back, got %d", len(a.model.Rows))
 	}
 }

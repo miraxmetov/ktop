@@ -37,8 +37,8 @@ func parseFlags() (options, error) {
 	fs.StringVar(&nsFlag, "namespace", "", "namespace to watch")
 	fs.StringVar(&ctxFlag, "c", "", "kube context to use")
 	fs.StringVar(&ctxFlag, "context", "", "kube context to use")
-	fs.Float64Var(&intervalArg, "i", 2, "refresh interval in seconds")
-	fs.Float64Var(&intervalArg, "interval", 2, "refresh interval in seconds")
+	fs.Float64Var(&intervalArg, "i", 1, "refresh interval in seconds")
+	fs.Float64Var(&intervalArg, "interval", 1, "refresh interval in seconds")
 	fs.BoolVar(&showVersion, "V", false, "print version and exit")
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
 	fs.Usage = func() { fmt.Fprint(fs.Output(), usage) }
@@ -78,7 +78,7 @@ Flags:
   -c, --context CONTEXT      kube context to use, instead of the current one
                              ktop -c staging-eu
 
-  -i, --interval SECONDS     how often to refresh, in seconds (default 2)
+  -i, --interval SECONDS     how often to refresh, in seconds (default 1)
                              ktop -i 5
 
   -h, --help                 show this help and exit
@@ -95,6 +95,8 @@ Examples:
   ktop production -i 5       the same, refreshed every five seconds
   KUBECONFIG=~/.kube/prod.yaml ktop
 `
+
+const noSelection = -1
 
 type podResult struct {
 	namespace string
@@ -155,7 +157,8 @@ func main() {
 			Namespace:  namespace,
 			Context:    client.Context,
 			Kubeconfig: client.Kubeconfig,
-			Interval:   opts.interval,
+			Started:    time.Now(),
+			Cursor:     noSelection,
 		},
 	}
 
@@ -282,6 +285,7 @@ func (a *app) reselect() {
 				return
 			}
 		}
+		a.model.Cursor = noSelection
 	}
 	a.clamp()
 }
@@ -302,9 +306,29 @@ func (a *app) switchNamespace(name string) {
 	a.model.Rows = nil
 	a.model.Err = ""
 	a.model.Note = ""
-	a.model.Cursor = 0
+	a.model.Cursor = noSelection
 	a.model.Offset = 0
 	a.fetchPods()
+}
+
+func (a *app) toggleLevel(level kube.Level) {
+	a.model.Focus = ui.FocusTable
+	if a.model.Level == level {
+		a.model.Level = kube.LevelAll
+	} else {
+		a.model.Level = level
+	}
+	a.reselect()
+}
+
+func (a *app) toggleDimension(dimension kube.Dimension) {
+	a.model.Focus = ui.FocusTable
+	if a.model.Dimension == dimension {
+		a.model.Dimension = kube.DimAll
+	} else {
+		a.model.Dimension = dimension
+	}
+	a.reselect()
 }
 
 func (a *app) focusPods() {
@@ -368,7 +392,7 @@ func (a *app) applyKubeconfig(path string) {
 	a.model.Rows = nil
 	a.model.Err = ""
 	a.model.Note = ""
-	a.model.Cursor = 0
+	a.model.Cursor = noSelection
 	a.model.Offset = 0
 	a.model.Choice = 0
 	a.model.Focus = ui.FocusTable
@@ -465,6 +489,16 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 			a.focusPods()
 		case ui.HitKubeconfig:
 			a.focusKubeconfig()
+		case ui.HitCritical:
+			a.toggleLevel(kube.LevelCritical)
+		case ui.HitWarning:
+			a.toggleLevel(kube.LevelWarning)
+		case ui.HitDimStatus:
+			a.toggleDimension(kube.DimStatus)
+		case ui.HitDimCPU:
+			a.toggleDimension(kube.DimCPU)
+		case ui.HitDimMemory:
+			a.toggleDimension(kube.DimMemory)
 		case ui.HitDropdown:
 			a.model.Choice = index
 			a.applyChoice()
@@ -476,13 +510,13 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 		}
 	case e.Buttons()&tcell.WheelUp != 0:
 		if a.model.Focus == ui.FocusTable {
-			a.model.Cursor -= 3
+			a.scroll(-1)
 		} else {
 			a.model.Choice--
 		}
 	case e.Buttons()&tcell.WheelDown != 0:
 		if a.model.Focus == ui.FocusTable {
-			a.model.Cursor += 3
+			a.scroll(1)
 		} else {
 			a.model.Choice++
 		}
@@ -502,48 +536,58 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 	case tcell.KeyCtrlC:
 		return true
 	case tcell.KeyEscape:
+		if a.model.Cursor >= 0 {
+			a.model.Cursor = noSelection
+			return false
+		}
 		if a.model.PodQuery != "" {
 			a.model.PodQuery = ""
 			a.reselect()
 			return false
 		}
+		if a.model.Level != kube.LevelAll || a.model.Dimension != kube.DimAll {
+			a.model.Level = kube.LevelAll
+			a.model.Dimension = kube.DimAll
+			a.reselect()
+			return false
+		}
 		return true
 	case tcell.KeyUp:
-		a.model.Cursor--
+		a.moveCursor(-1)
 	case tcell.KeyDown:
-		a.model.Cursor++
+		a.moveCursor(1)
 	case tcell.KeyPgUp:
-		a.model.Cursor -= page
+		a.page(-page)
 	case tcell.KeyPgDn:
-		a.model.Cursor += page
+		a.page(page)
 	case tcell.KeyHome:
-		a.model.Cursor = 0
+		a.jump(0)
 	case tcell.KeyEnd:
-		a.model.Cursor = len(a.model.Rows) - 1
+		a.jump(len(a.model.Rows) - 1)
 	case tcell.KeyTab:
 		a.focusPods()
 	case tcell.KeyBacktab:
 		a.focusNamespace()
 	case tcell.KeyRune:
 		switch e.Rune() {
-		case 'q':
+		case 'q', 'Q':
 			return true
 		case 'k':
-			a.model.Cursor--
+			a.moveCursor(-1)
 		case 'j':
-			a.model.Cursor++
+			a.moveCursor(1)
 		case 'g':
-			a.model.Cursor = 0
+			a.jump(0)
 		case 'G':
-			a.model.Cursor = len(a.model.Rows) - 1
-		case 'r':
+			a.jump(len(a.model.Rows) - 1)
+		case 'r', 'R':
 			a.fetchPods()
 			a.fetchNamespaces()
 		case '/':
 			a.focusPods()
-		case 'n':
+		case 'n', 'N':
 			a.focusNamespace()
-		case 'c':
+		case 'c', 'C':
 			a.focusKubeconfig()
 		}
 	}
@@ -630,6 +674,34 @@ func trimLast(text string) string {
 	return string(runes[:len(runes)-1])
 }
 
+func (a *app) moveCursor(delta int) {
+	if a.model.Cursor < 0 {
+		a.model.Cursor = a.model.Offset
+		return
+	}
+	a.model.Cursor += delta
+}
+
+func (a *app) page(delta int) {
+	if a.model.Cursor >= 0 {
+		a.model.Cursor += delta
+		return
+	}
+	a.scroll(delta)
+}
+
+func (a *app) jump(index int) {
+	if a.model.Cursor >= 0 {
+		a.model.Cursor = index
+		return
+	}
+	a.model.Offset = index
+}
+
+func (a *app) scroll(delta int) {
+	a.model.Offset += delta
+}
+
 func (a *app) clamp() {
 	_, height := a.screen.Size()
 	room := ui.Visible(height)
@@ -638,14 +710,16 @@ func (a *app) clamp() {
 	if model.Cursor > len(model.Rows)-1 {
 		model.Cursor = len(model.Rows) - 1
 	}
-	if model.Cursor < 0 {
-		model.Cursor = 0
+	if model.Cursor < noSelection {
+		model.Cursor = noSelection
 	}
-	if model.Cursor < model.Offset {
-		model.Offset = model.Cursor
-	}
-	if model.Cursor >= model.Offset+room {
-		model.Offset = model.Cursor - room + 1
+	if model.Cursor >= 0 {
+		if model.Cursor < model.Offset {
+			model.Offset = model.Cursor
+		}
+		if model.Cursor >= model.Offset+room {
+			model.Offset = model.Cursor - room + 1
+		}
 	}
 	if model.Offset > len(model.Rows)-room {
 		model.Offset = len(model.Rows) - room

@@ -8,7 +8,7 @@ Problem pods sort to the top, the hottest first.
 
 ```
 Current namespace: production                                        ~/.kube/prod.yaml
-Search for namespaces...
+Search namespaces...
 
 3 critical / 5 warning                                                    16:42:07
 
@@ -53,7 +53,7 @@ in the syntax of your own shell.
 ktop                      # namespace of the current kube context
 ktop production           # a namespace by name
 ktop -n production        # same thing
-ktop production -i 5      # refresh every 5 seconds (default: 2)
+ktop production -i 5      # refresh every 5 seconds (default: 1)
 ktop -c staging -n web    # another kube context
 ```
 
@@ -63,27 +63,34 @@ Without an argument ktop takes the namespace of the current kubeconfig context, 
 | Key | Action |
 | --- | --- |
 | `/` | search pods by name |
-| `n` | search and switch namespace |
-| `c` | change the kubeconfig, with file completion |
+| `n` / `N` | search and switch namespace |
+| `c` / `C` | change the kubeconfig, with file completion |
 | `Tab` | complete the search box with the highlighted entry |
 | `Shift+Tab` | move between the two search fields |
-| `↑` `↓` | pick from the open list, or move the cursor in the table |
+| `↑` `↓` | pick from the open list, or move the cursor in the table (the first press selects the top visible row) |
 | `Enter` | take the highlighted entry: jump to that pod, or switch to that namespace |
-| `Esc` | leave the search field, then clear the filter, then quit |
+| `Esc` | leave the search field, then drop the selection, then clear the filters, then quit |
 | `Ctrl+U` | clear the current search field |
 | `k` `j` | move the cursor |
 | `PgUp` `PgDn` | scroll a page |
 | `g` `G` / `Home` `End` | jump to the first or last pod |
 | `r` | refresh right now, ahead of the interval |
-| `q` / `Ctrl+C` | quit |
+| `q` / `Q` / `Ctrl+C` | quit |
+
+The status line is a filter. `N critical / N warning` counts the pods behind each number, and
+`regarding status / cpu / memory` decides what those words mean: pick `cpu` and the counters
+describe CPU against limits alone, pick `status` and they count crashing and not-ready pods.
+Click a number to keep only those pods, click the chosen word again to let the rest back in.
+Nothing is selected by default, the current choice is highlighted, and `Esc` clears both. In a
+namespace with hundreds of pods that is the fastest way to see what is actually wrong.
 
 The kubeconfig in use is shown at the top right. Click it, or press `c`, to point ktop at a
 different one: the list offers what is in the directory you are typing, directories open as you
 take them, and a file switches the cluster, namespace included.
 
 The mouse works too: click a search box to open it, click an entry in the list to take it,
-click a row to put the cursor there, click anywhere else to close the list, and scroll the
-wheel over the table or the list.
+click a row to select it, click anywhere else to close the list, and scroll the wheel over the
+table or the list. Nothing is selected until you click a row or press an arrow key.
 Opening a search shows everything ktop can see — every pod in the namespace, every namespace
 you may list — and the list narrows as you type.
 

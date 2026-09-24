@@ -201,6 +201,77 @@ func (c *Client) Rows(ctx context.Context, namespace string) (Result, error) {
 	return result, nil
 }
 
+type Level int
+
+const (
+	LevelAll Level = iota
+	LevelWarning
+	LevelCritical
+)
+
+type Dimension int
+
+const (
+	DimAll Dimension = iota
+	DimStatus
+	DimCPU
+	DimMemory
+)
+
+func Classify(r Row, dimension Dimension) Level {
+	switch dimension {
+	case DimStatus:
+		switch r.Severity {
+		case Bad:
+			return LevelCritical
+		case Warn:
+			return LevelWarning
+		}
+		return LevelAll
+	case DimCPU:
+		return pctLevel(r.CPUPct)
+	case DimMemory:
+		return pctLevel(r.MemPct)
+	}
+	return pctLevel(r.Worst)
+}
+
+func pctLevel(pct float64) Level {
+	switch {
+	case pct >= CritPct:
+		return LevelCritical
+	case pct >= WarnPct:
+		return LevelWarning
+	}
+	return LevelAll
+}
+
+func Count(rows []Row, dimension Dimension) (int, int) {
+	crit, warn := 0, 0
+	for _, r := range rows {
+		switch Classify(r, dimension) {
+		case LevelCritical:
+			crit++
+		case LevelWarning:
+			warn++
+		}
+	}
+	return crit, warn
+}
+
+func FilterLevel(rows []Row, level Level, dimension Dimension) []Row {
+	if level == LevelAll {
+		return rows
+	}
+	filtered := make([]Row, 0, len(rows))
+	for _, r := range rows {
+		if Classify(r, dimension) == level {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
 func Filter(rows []Row, query string) []Row {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
@@ -330,9 +401,19 @@ func Sort(rows []Row) {
 		if a.Problem != b.Problem {
 			return a.Problem
 		}
-		if a.Worst != b.Worst {
-			return a.Worst > b.Worst
+		if rank(a) != rank(b) {
+			return rank(a) < rank(b)
 		}
 		return a.Name < b.Name
 	})
+}
+
+func rank(r Row) int {
+	switch Classify(r, DimAll) {
+	case LevelCritical:
+		return 0
+	case LevelWarning:
+		return 1
+	}
+	return 2
 }

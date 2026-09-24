@@ -14,17 +14,17 @@ import (
 const (
 	gap          = 2
 	minName      = 20
-	maxName      = 56
-	lineTitle    = 0
-	lineNs       = 1
-	lineStatus   = 3
-	linePods     = 5
-	lineHeader   = 7
-	lineRule     = 8
-	rowTop       = 9
-	overhead     = 11
-	nsInnerMin   = 24
-	podInnerMin  = 30
+	lineClock    = 0
+	lineTitle    = 1
+	nsBoxTop     = 2
+	lineNs       = 3
+	lineStatus   = 5
+	podBoxTop    = 6
+	linePods     = 7
+	lineHeader   = 9
+	lineRule     = 10
+	rowTop       = 11
+	overhead     = 13
 	kubeInnerMin = 30
 	dropMax      = 8
 )
@@ -45,8 +45,19 @@ const (
 	HitNamespaceInput
 	HitPodInput
 	HitKubeconfig
+	HitCritical
+	HitWarning
+	HitDimStatus
+	HitDimCPU
+	HitDimMemory
 	HitDropdown
 	HitRow
+)
+
+const (
+	warnColor     = tcell.Color220
+	selectedColor = tcell.Color248
+	inkColor      = tcell.Color16
 )
 
 var (
@@ -54,7 +65,7 @@ var (
 	styleBold     = tcell.StyleDefault.Bold(true)
 	styleDim      = tcell.StyleDefault.Foreground(tcell.ColorGray)
 	styleGood     = tcell.StyleDefault.Foreground(tcell.ColorGreen)
-	styleWarn     = tcell.StyleDefault.Foreground(tcell.ColorYellow)
+	styleWarn     = tcell.StyleDefault.Foreground(warnColor)
 	styleBad      = tcell.StyleDefault.Foreground(tcell.ColorRed).Bold(true)
 	styleAccent   = tcell.StyleDefault.Foreground(tcell.ColorTeal)
 	styleTitle    = tcell.StyleDefault.Foreground(tcell.ColorWhite).Bold(true)
@@ -62,13 +73,15 @@ var (
 	stylePlace    = tcell.StyleDefault.Foreground(tcell.ColorGray).Italic(true)
 	styleFocused  = tcell.StyleDefault.Foreground(tcell.ColorTeal).Bold(true)
 	styleCursor   = tcell.StyleDefault.Reverse(true)
-	styleSelected = tcell.StyleDefault.Background(tcell.Color236)
+	styleSelected = tcell.StyleDefault.Background(selectedColor).Foreground(inkColor)
 	styleKube     = tcell.StyleDefault.Foreground(tcell.ColorTeal).Underline(true)
+	styleChoice   = tcell.StyleDefault.Foreground(tcell.Color231).Bold(true)
 	styleDropdown = tcell.StyleDefault.Foreground(tcell.ColorWhite)
 )
 
 type Model struct {
 	Namespace      string
+	Started        time.Time
 	Context        string
 	Kubeconfig     string
 	PathQuery      string
@@ -80,10 +93,11 @@ type Model struct {
 	Namespaces     []string
 	NamespaceNote  string
 	Focus          Focus
+	Level          kube.Level
+	Dimension      kube.Dimension
 	Choice         int
 	Note           string
 	Err            string
-	Interval       time.Duration
 	Offset         int
 	Cursor         int
 	Now            time.Time
@@ -98,7 +112,11 @@ func (r rect) contains(x, y int) bool {
 }
 
 func ApplyFilter(m *Model) {
-	m.Rows = kube.Filter(m.All, m.PodQuery)
+	m.Rows = kube.FilterLevel(kube.Filter(m.All, m.PodQuery), m.Level, m.Dimension)
+}
+
+func (m *Model) Counts() (int, int) {
+	return kube.Count(m.All, m.Dimension)
 }
 
 func (m *Model) NamespaceMatches() []string {
@@ -143,18 +161,20 @@ func (m *Model) ClampChoice() {
 }
 
 type column struct {
-	key   string
-	title string
-	width int
-	right bool
-	value func(kube.Row) (string, tcell.Style)
+	key    string
+	title  string
+	width  int
+	right  bool
+	center bool
+	tinted bool
+	value  func(kube.Row) (string, tcell.Style)
 }
 
 var columns = []column{
 	{key: "name", title: "POD", width: 0, value: func(r kube.Row) (string, tcell.Style) {
 		return r.Name, styleBase
 	}},
-	{key: "status", title: "STATUS", width: 18, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "status", title: "STATUS", width: 18, tinted: true, value: func(r kube.Row) (string, tcell.Style) {
 		return r.Status, severityStyle(r.Severity)
 	}},
 	{key: "cpu", title: "CPU", width: 8, right: true, value: func(r kube.Row) (string, tcell.Style) {
@@ -163,7 +183,7 @@ var columns = []column{
 		}
 		return fmt.Sprintf("%.0fm", r.CPU), styleBase
 	}},
-	{key: "cpu_pct", title: "%LIM", width: 6, right: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "cpu_pct", title: "%LIM", width: 6, right: true, tinted: true, value: func(r kube.Row) (string, tcell.Style) {
 		return pctText(r.CPUPct), pctStyle(r.CPUPct)
 	}},
 	{key: "mem", title: "MEM", width: 9, right: true, value: func(r kube.Row) (string, tcell.Style) {
@@ -172,10 +192,10 @@ var columns = []column{
 		}
 		return fmt.Sprintf("%.0fMi", r.Mem), styleBase
 	}},
-	{key: "mem_pct", title: "%LIM", width: 6, right: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "mem_pct", title: "%LIM", width: 6, right: true, tinted: true, value: func(r kube.Row) (string, tcell.Style) {
 		return pctText(r.MemPct), pctStyle(r.MemPct)
 	}},
-	{key: "restarts", title: "RESTART CTR", width: 11, right: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "restarts", title: "RESTART CTR", width: 11, center: true, value: func(r kube.Row) (string, tcell.Style) {
 		if r.NewRestarts > 0 {
 			return fmt.Sprintf("%d +%d", r.Restarts, r.NewRestarts), styleWarn
 		}
@@ -184,7 +204,7 @@ var columns = []column{
 		}
 		return fmt.Sprintf("%d", r.Restarts), styleBold
 	}},
-	{key: "ooms", title: "OOM CTR", width: 7, right: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "ooms", title: "OOM CTR", width: 7, center: true, value: func(r kube.Row) (string, tcell.Style) {
 		if r.OOMs == 0 {
 			return "0", styleDim
 		}
@@ -283,6 +303,38 @@ func Ago(d time.Duration) string {
 	return fmt.Sprintf("%dd%dh", s/86400, (s%86400)/3600)
 }
 
+func Uptime(d time.Duration) string {
+	seconds := int(d.Seconds())
+	if seconds < 0 {
+		seconds = 0
+	}
+
+	const (
+		minute = 60
+		hour   = 60 * minute
+		day    = 24 * hour
+		week   = 7 * day
+		month  = 30 * day
+		year   = 365 * day
+	)
+
+	switch {
+	case seconds < minute:
+		return fmt.Sprintf("%ds", seconds)
+	case seconds < hour:
+		return fmt.Sprintf("%dm %ds", seconds/minute, seconds%minute/1)
+	case seconds < day:
+		return fmt.Sprintf("%dh %dm", seconds/hour, seconds%hour/minute)
+	case seconds < week:
+		return fmt.Sprintf("%dd %dh", seconds/day, seconds%day/hour)
+	case seconds < month:
+		return fmt.Sprintf("%dw %dd", seconds/week, seconds%week/day)
+	case seconds < year:
+		return fmt.Sprintf("%dmo %dw", seconds/month, seconds%month/week)
+	}
+	return fmt.Sprintf("%dy %dmo", seconds/year, seconds%year/month)
+}
+
 func RestartText(t time.Time, now time.Time) string {
 	if t.IsZero() {
 		return "-"
@@ -294,9 +346,16 @@ type geometry struct {
 	cols      []column
 	widths    []int
 	total     int
+	nsBox     rect
+	podBox    rect
 	nsInput   rect
 	podInput  rect
 	kubeInput rect
+	critical  rect
+	warning   rect
+	dimStatus rect
+	dimCPU    rect
+	dimMemory rect
 	dropdown  rect
 	options   []string
 	room      int
@@ -304,7 +363,7 @@ type geometry struct {
 
 const (
 	podPlaceholder  = "Search for pods..."
-	nsPlaceholder   = "Search for namespaces..."
+	nsPlaceholder   = "Search namespaces..."
 	kubePlaceholder = "Path to kubeconfig..."
 )
 
@@ -326,6 +385,17 @@ func inputWidth(text, hint string, minInner int) int {
 	width := len([]rune(shown)) + 1
 	if width < minInner {
 		width = minInner
+	}
+	return width
+}
+
+func boxWidthFor(total, share, low, high int) int {
+	width := total / share
+	if width < low {
+		width = low
+	}
+	if width > high {
+		width = high
 	}
 	return width
 }
@@ -366,21 +436,19 @@ func geom(m Model, width, height int) geometry {
 
 	g := geometry{cols: cols, widths: widths, total: total, room: Visible(height)}
 
-	g.nsInput = rect{
-		x: 0, y: lineNs, h: 1,
-		w: inputWidth(m.NamespaceQuery, nsPlaceholder, nsInnerMin),
-	}
-	g.podInput = rect{
-		x: 0, y: linePods, h: 1,
-		w: inputWidth(m.PodQuery, podPlaceholder, podInnerMin),
-	}
+	nsInner := boxWidthFor(total, 6, 21, 30)
+	podInner := boxWidthFor(total, 3, 26, 60)
+	g.nsBox = rect{x: 0, y: nsBoxTop, w: nsInner + 4, h: 3}
+	g.podBox = rect{x: 0, y: podBoxTop, w: podInner + 4, h: 3}
+	g.nsInput = rect{x: 2, y: lineNs, w: nsInner, h: 1}
+	g.podInput = rect{x: 2, y: linePods, w: podInner, h: 1}
 
 	kubeWidth := len([]rune(ShortPath(m.Kubeconfig)))
 	if m.Focus == FocusKubeconfig {
 		kubeWidth = inputWidth(m.PathQuery, kubePlaceholder, kubeInnerMin)
 	}
 	kubeX := total - kubeWidth
-	if minX := len([]rune("Current namespace: "+m.Namespace)) + 2; kubeX < minX {
+	if minX := len([]rune("Using "+m.Namespace+" namespace")) + 2; kubeX < minX {
 		kubeX = minX
 	}
 	if kubeX+kubeWidth > width {
@@ -388,12 +456,29 @@ func geom(m Model, width, height int) geometry {
 	}
 	g.kubeInput = rect{x: kubeX, y: lineTitle, w: kubeWidth, h: 1}
 
+	crit, warn := m.Counts()
+	critText := fmt.Sprintf("%d critical", crit)
+	warnText := fmt.Sprintf("%d warning", warn)
+	groupWidth := len(critText) + 3 + len(warnText) + len(dimensionPrefix) +
+		len("status") + 3 + len("cpu") + 3 + len("memory")
+	x := max(0, (total-groupWidth)/2)
+
+	g.critical = rect{x: x, y: lineStatus, w: len(critText), h: 1}
+	x += len(critText) + 3
+	g.warning = rect{x: x, y: lineStatus, w: len(warnText), h: 1}
+	x += len(warnText) + len(dimensionPrefix)
+	g.dimStatus = rect{x: x, y: lineStatus, w: len("status"), h: 1}
+	x += len("status") + 3
+	g.dimCPU = rect{x: x, y: lineStatus, w: len("cpu"), h: 1}
+	x += len("cpu") + 3
+	g.dimMemory = rect{x: x, y: lineStatus, w: len("memory"), h: 1}
+
 	if m.Focus != FocusTable {
 		g.options = m.Options()
-		anchor := g.nsInput
+		anchor := g.nsBox
 		switch m.Focus {
 		case FocusPods:
-			anchor = g.podInput
+			anchor = g.podBox
 		case FocusKubeconfig:
 			anchor = g.kubeInput
 		}
@@ -417,14 +502,14 @@ func geom(m Model, width, height int) geometry {
 		if boxX+boxWidth > width {
 			boxX = max(0, width-boxWidth)
 		}
-		available := height - anchor.y - 3
+		available := height - anchor.y - anchor.h - 2
 		if rows+2 > available {
 			rows = available - 2
 		}
 		if rows < 1 {
 			rows = 1
 		}
-		g.dropdown = rect{x: boxX, y: anchor.y + 1, w: boxWidth, h: rows + 2}
+		g.dropdown = rect{x: boxX, y: anchor.y + anchor.h, w: boxWidth, h: rows + 2}
 	}
 	return g
 }
@@ -445,6 +530,29 @@ func Visible(height int) int {
 	return room
 }
 
+type Rect struct {
+	X, Y, W, H int
+}
+
+type Layout struct {
+	Critical  Rect
+	Warning   Rect
+	DimStatus Rect
+	DimCPU    Rect
+	DimMemory Rect
+}
+
+func Geometry(m Model, width, height int) Layout {
+	g := geom(m, width, height)
+	return Layout{
+		Critical:  Rect{X: g.critical.x, Y: g.critical.y, W: g.critical.w, H: g.critical.h},
+		Warning:   Rect{X: g.warning.x, Y: g.warning.y, W: g.warning.w, H: g.warning.h},
+		DimStatus: Rect{X: g.dimStatus.x, Y: g.dimStatus.y, W: g.dimStatus.w, H: g.dimStatus.h},
+		DimCPU:    Rect{X: g.dimCPU.x, Y: g.dimCPU.y, W: g.dimCPU.w, H: g.dimCPU.h},
+		DimMemory: Rect{X: g.dimMemory.x, Y: g.dimMemory.y, W: g.dimMemory.w, H: g.dimMemory.h},
+	}
+}
+
 func Hit(m Model, width, height, x, y int) (Target, int) {
 	g := geom(m, width, height)
 
@@ -455,14 +563,29 @@ func Hit(m Model, width, height, x, y int) (Target, int) {
 		}
 		return HitNone, 0
 	}
-	if g.nsInput.contains(x, y) {
+	if g.nsBox.contains(x, y) {
 		return HitNamespaceInput, 0
 	}
-	if g.podInput.contains(x, y) {
+	if g.podBox.contains(x, y) {
 		return HitPodInput, 0
 	}
 	if g.kubeInput.contains(x, y) {
 		return HitKubeconfig, 0
+	}
+	if g.critical.contains(x, y) {
+		return HitCritical, 0
+	}
+	if g.warning.contains(x, y) {
+		return HitWarning, 0
+	}
+	if g.dimStatus.contains(x, y) {
+		return HitDimStatus, 0
+	}
+	if g.dimCPU.contains(x, y) {
+		return HitDimCPU, 0
+	}
+	if g.dimMemory.contains(x, y) {
+		return HitDimMemory, 0
 	}
 	if y >= rowTop && y < rowTop+g.room && x < g.total {
 		index := m.Offset + (y - rowTop)
@@ -528,7 +651,11 @@ func drawInput(s tcell.Screen, box rect, text, placeholder string, focused bool)
 
 	runes := []rune(shown)
 	if len(runes) > box.w-1 {
-		runes = runes[len(runes)-(box.w-1):]
+		if text == "" {
+			runes = runes[:box.w-1]
+		} else {
+			runes = runes[len(runes)-(box.w-1):]
+		}
 	}
 	written := puts(s, box.x, box.y, 0, false, string(runes), style)
 
@@ -538,6 +665,20 @@ func drawInput(s tcell.Screen, box rect, text, placeholder string, focused bool)
 	}
 	for i := written; i < box.w; i++ {
 		s.SetContent(box.x+i, box.y, ' ', nil, styleBase)
+	}
+}
+
+func drawBox(s tcell.Screen, box rect, focused bool) {
+	style := styleDim
+	if focused {
+		style = styleFocused
+	}
+	line := repeat("\u2500", box.w-2)
+	puts(s, box.x, box.y, 0, false, "\u250c"+line+"\u2510", style)
+	puts(s, box.x, box.y+box.h-1, 0, false, "\u2514"+line+"\u2518", style)
+	for y := box.y + 1; y < box.y+box.h-1; y++ {
+		puts(s, box.x, y, 0, false, "\u2502", style)
+		puts(s, box.x+box.w-1, y, 0, false, "\u2502", style)
 	}
 }
 
@@ -608,8 +749,18 @@ func Draw(s tcell.Screen, m Model) {
 		now = time.Now()
 	}
 
-	x := puts(s, 0, lineTitle, 0, false, "Current namespace: ", styleDim)
-	puts(s, x, lineTitle, 0, false, m.Namespace, styleTitle)
+	clock := now.Format("15:04:05")
+	uptime := ""
+	if !m.Started.IsZero() {
+		uptime = "  (" + Uptime(now.Sub(m.Started)) + ")"
+	}
+	clockX := max(0, (total-len(clock)-len(uptime))/2)
+	x := clockX + puts(s, clockX, lineClock, 0, false, clock, styleAccent)
+	puts(s, x, lineClock, 0, false, uptime, styleDim)
+
+	x = puts(s, 0, lineTitle, 0, false, "Using ", styleDim)
+	x += puts(s, x, lineTitle, 0, false, m.Namespace, styleTitle)
+	puts(s, x, lineTitle, 0, false, " namespace", styleDim)
 
 	if m.Focus == FocusKubeconfig {
 		drawInput(s, g.kubeInput, m.PathQuery, kubePlaceholder, true)
@@ -617,48 +768,40 @@ func Draw(s tcell.Screen, m Model) {
 		puts(s, g.kubeInput.x, lineTitle, 0, false, ShortPath(m.Kubeconfig), styleKube)
 	}
 
+	drawBox(s, g.nsBox, m.Focus == FocusNamespace)
 	drawInput(s, g.nsInput, m.NamespaceQuery, nsPlaceholder, m.Focus == FocusNamespace)
 	if m.Focus == FocusNamespace && m.NamespaceNote != "" {
-		puts(s, g.nsInput.x+g.nsInput.w+2, lineNs, max(0, total-g.nsInput.x-g.nsInput.w-2),
-			false, m.NamespaceNote, styleDim)
+		noteX := g.nsBox.x + g.nsBox.w + 2
+		puts(s, noteX, lineNs, max(0, total-noteX), false, m.NamespaceNote, styleDim)
 	}
 
-	crit, warn := 0, 0
-	for _, r := range m.All {
-		switch {
-		case r.Worst >= kube.CritPct:
-			crit++
-		case r.Worst >= kube.WarnPct:
-			warn++
-		}
-	}
+	crit, warn := m.Counts()
 
-	x = 0
-	critStyle, warnStyle := styleAccent, styleAccent
-	if crit > 0 {
-		critStyle = styleBad
-	}
-	if warn > 0 {
-		warnStyle = styleWarn
-	}
-	x += puts(s, x, lineStatus, 0, false, fmt.Sprintf("%d critical", crit), critStyle)
-	x += puts(s, x, lineStatus, 0, false, " / ", styleAccent)
-	x += puts(s, x, lineStatus, 0, false, fmt.Sprintf("%d warning", warn), warnStyle)
+	message, messageStyle := m.Note, styleWarn
 	if m.Err != "" {
-		x += puts(s, x, lineStatus, 0, false, "   ", styleBase)
-		x += puts(s, x, lineStatus, 0, false, truncate(m.Err, max(0, total-x-10)), styleBad)
-	} else if m.Note != "" {
-		x += puts(s, x, lineStatus, 0, false, "   ", styleBase)
-		x += puts(s, x, lineStatus, 0, false, truncate(m.Note, max(0, total-x-10)), styleWarn)
+		message, messageStyle = m.Err, styleBad
 	}
-	clock := now.Format("15:04:05")
-	if total-len(clock) > x {
-		puts(s, total-len(clock), lineStatus, 0, false, clock, styleAccent)
+	if message != "" {
+		puts(s, 0, lineStatus, 0, false, truncate(message, max(0, g.critical.x-2)), messageStyle)
 	}
 
+	puts(s, g.critical.x, lineStatus, 0, false, fmt.Sprintf("%d critical", crit),
+		pickStyle(styleBad, m.Level == kube.LevelCritical))
+	puts(s, g.critical.x+g.critical.w, lineStatus, 0, false, " / ", styleDim)
+	puts(s, g.warning.x, lineStatus, 0, false, fmt.Sprintf("%d warning", warn),
+		pickStyle(styleWarn, m.Level == kube.LevelWarning))
+
+	puts(s, g.warning.x+g.warning.w, lineStatus, 0, false, dimensionPrefix, styleDim)
+	puts(s, g.dimStatus.x, lineStatus, 0, false, "status", pickStyle(styleChoice, m.Dimension == kube.DimStatus))
+	puts(s, g.dimStatus.x+g.dimStatus.w, lineStatus, 0, false, " / ", styleDim)
+	puts(s, g.dimCPU.x, lineStatus, 0, false, "cpu", pickStyle(styleChoice, m.Dimension == kube.DimCPU))
+	puts(s, g.dimCPU.x+g.dimCPU.w, lineStatus, 0, false, " / ", styleDim)
+	puts(s, g.dimMemory.x, lineStatus, 0, false, "memory", pickStyle(styleChoice, m.Dimension == kube.DimMemory))
+
+	drawBox(s, g.podBox, m.Focus == FocusPods)
 	drawInput(s, g.podInput, m.PodQuery, podPlaceholder, m.Focus == FocusPods)
 	if m.PodQuery != "" {
-		puts(s, g.podInput.x+g.podInput.w+2, linePods, 0, false,
+		puts(s, g.podBox.x+g.podBox.w+2, linePods, 0, false,
 			fmt.Sprintf("%d/%d", len(m.Rows), len(m.All)), styleAccent)
 	}
 
@@ -681,10 +824,13 @@ func Draw(s tcell.Screen, m Model) {
 
 	if len(m.Rows) == 0 {
 		empty := "no pods in this namespace"
-		if m.PodQuery != "" && len(m.All) > 0 {
-			empty = "no pod matches " + m.PodQuery
-		} else if m.Err != "" {
+		switch {
+		case m.Err != "":
 			empty = ""
+		case m.Level != kube.LevelAll && len(m.All) > 0:
+			empty = emptyLevelText(m.Level, m.Dimension)
+		case m.PodQuery != "" && len(m.All) > 0:
+			empty = "no pod matches " + m.PodQuery
 		}
 		puts(s, 0, rowTop, 0, false, empty, styleDim)
 	}
@@ -692,7 +838,7 @@ func Draw(s tcell.Screen, m Model) {
 	for i := 0; i < g.room && offset+i < len(m.Rows); i++ {
 		row := m.Rows[offset+i]
 		y := rowTop + i
-		selected := offset+i == m.Cursor
+		selected := m.Cursor >= 0 && offset+i == m.Cursor
 		if selected {
 			for cx := 0; cx < total; cx++ {
 				s.SetContent(cx, y, ' ', nil, styleSelected)
@@ -704,8 +850,11 @@ func Draw(s tcell.Screen, m Model) {
 			if c.key == "last_restart" && !row.LastRestart.IsZero() {
 				text = RestartText(row.LastRestart, now)
 			}
+			if c.center {
+				text = centerText(text, g.widths[ci])
+			}
 			if selected {
-				style = style.Background(tcell.Color236)
+				style = onSelection(style, c.tinted)
 			}
 			x += puts(s, x, y, g.widths[ci], c.right, text, style)
 			if selected {
@@ -723,15 +872,25 @@ func Draw(s tcell.Screen, m Model) {
 	if hidden < 0 {
 		hidden = 0
 	}
-	footer := fmt.Sprintf("/ search pods  %s  n namespace  %s  c kubeconfig  %s  click to focus  %s  q quit  %s  refreshes every %s",
-		dot, dot, dot, dot, dot, m.Interval.String())
-	if m.Focus != FocusTable {
-		footer = fmt.Sprintf("%s%s choose  %s  Tab complete  %s  Enter apply  %s  Esc or click away  %s  Shift+Tab switch field",
-			arrowUp, arrowDown, dot, dot, dot, dot)
-	} else if hidden > 0 {
-		footer = fmt.Sprintf("+%d more  %s  %s", hidden, dot, footer)
+	items := []string{
+		"[/] search pods",
+		"[N] namespace",
+		"[C] kubeconfig",
+		"click to focus",
+		"[Q] quit",
 	}
-	puts(s, 0, height-1, 0, false, truncate(footer, total), styleDim)
+	if m.Focus != FocusTable {
+		items = []string{
+			"[" + arrowUp + arrowDown + "] choose",
+			"[Tab] complete",
+			"[Enter] apply",
+			"[Esc] close",
+			"[Shift+Tab] switch field",
+		}
+	} else if hidden > 0 {
+		items = append([]string{fmt.Sprintf("+%d more", hidden)}, items...)
+	}
+	puts(s, 0, height-1, 0, false, justify(items, total), styleDim)
 	s.Show()
 }
 
@@ -740,6 +899,91 @@ const (
 	arrowUp   = "↑"
 	arrowDown = "↓"
 )
+
+func justify(items []string, width int) string {
+	if len(items) == 0 || width <= 0 {
+		return ""
+	}
+	if len(items) == 1 {
+		return truncate(items[0], width)
+	}
+
+	length := 0
+	for _, item := range items {
+		length += len([]rune(item))
+	}
+	gaps := len(items) - 1
+	spread := width - length
+	if spread < gaps*2 {
+		return truncate(strings.Join(items, "  "), width)
+	}
+
+	base, extra := spread/gaps, spread%gaps
+	var line strings.Builder
+	for i, item := range items {
+		line.WriteString(item)
+		if i == gaps {
+			break
+		}
+		space := base
+		if i < extra {
+			space++
+		}
+		line.WriteString(strings.Repeat(" ", space))
+	}
+	return line.String()
+}
+
+const dimensionPrefix = "   issues regarding "
+
+func onSelection(style tcell.Style, tinted bool) tcell.Style {
+	fg, _, attrs := style.Decompose()
+	ink := inkColor
+	if tinted {
+		switch fg {
+		case tcell.ColorRed:
+			ink = tcell.Color88
+		case warnColor:
+			ink = tcell.Color94
+		case tcell.ColorGreen:
+			ink = tcell.Color22
+		case tcell.ColorGray:
+			ink = tcell.Color238
+		}
+	}
+	return tcell.StyleDefault.Background(selectedColor).Foreground(ink).Bold(attrs&tcell.AttrBold != 0)
+}
+
+func pickStyle(base tcell.Style, active bool) tcell.Style {
+	if active {
+		return base.Bold(true).Reverse(true)
+	}
+	return base
+}
+
+func emptyLevelText(level kube.Level, dimension kube.Dimension) string {
+	what := "critical"
+	if level == kube.LevelWarning {
+		what = "warning"
+	}
+	switch dimension {
+	case kube.DimStatus:
+		return "no pod is " + what + " by status"
+	case kube.DimCPU:
+		return "no pod is " + what + " by cpu"
+	case kube.DimMemory:
+		return "no pod is " + what + " by memory"
+	}
+	return "no pod is " + what + " by cpu or memory"
+}
+
+func centerText(text string, width int) string {
+	pad := width - len([]rune(text))
+	if pad <= 0 {
+		return text
+	}
+	return strings.Repeat(" ", pad/2) + text
+}
 
 func truncate(text string, width int) string {
 	runes := []rune(text)

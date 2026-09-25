@@ -50,14 +50,26 @@ const (
 	HitDimStatus
 	HitDimCPU
 	HitDimMemory
+	HitPodName
+	HitActionInspect
+	HitActionRestart
+	HitActionTerminate
+	HitConfirmYes
+	HitConfirmCancel
+	HitFormatDefault
+	HitFormatTextual
+	HitFormatYAML
+	HitLogSearch
+	HitLogPane
+	HitConfigPane
 	HitDropdown
 	HitRow
 )
 
 const (
-	warnColor     = tcell.Color220
-	selectedColor = tcell.Color248
-	inkColor      = tcell.Color16
+	warnColor      = tcell.Color220
+	highlightColor = tcell.Color248
+	inkColor       = tcell.Color16
 )
 
 var (
@@ -72,10 +84,11 @@ var (
 	stylePlace    = tcell.StyleDefault.Foreground(tcell.ColorGray).Italic(true)
 	styleFocused  = tcell.StyleDefault.Foreground(tcell.ColorTeal).Bold(true)
 	styleCursor   = tcell.StyleDefault.Reverse(true)
-	styleSelected = tcell.StyleDefault.Background(selectedColor).Foreground(inkColor)
 	styleKube     = tcell.StyleDefault.Foreground(tcell.ColorTeal).Underline(true)
 	styleChoice   = tcell.StyleDefault.Foreground(tcell.Color231).Bold(true)
 	styleDropdown = tcell.StyleDefault.Foreground(tcell.ColorWhite)
+	styleChosen   = tcell.StyleDefault.Background(highlightColor).Foreground(inkColor)
+	styleMatch    = tcell.StyleDefault.Background(warnColor).Foreground(inkColor)
 )
 
 type Model struct {
@@ -98,8 +111,43 @@ type Model struct {
 	Note           string
 	Err            string
 	Offset         int
-	Cursor         int
+	Expanded       string
+	Confirm        Action
+	Screen         Screen
+	Loaded         bool
+	Inspect        Inspection
 	Now            time.Time
+}
+
+type Screen int
+
+const (
+	ScreenTable Screen = iota
+	ScreenInspect
+)
+
+type Action int
+
+const (
+	ActionNone Action = iota
+	ActionRestart
+	ActionTerminate
+)
+
+type slot struct {
+	row    int
+	action bool
+}
+
+func visibleSlots(m Model, offset, room int) []slot {
+	out := make([]slot, 0, room)
+	for i := offset; i < len(m.Rows) && len(out) < room; i++ {
+		out = append(out, slot{row: i})
+		if m.Rows[i].Name == m.Expanded && len(out) < room {
+			out = append(out, slot{row: i, action: true})
+		}
+	}
+	return out
 }
 
 type rect struct {
@@ -142,11 +190,17 @@ func (m *Model) Options() []string {
 	return nil
 }
 
-func (m *Model) SelectedName() string {
-	if m.Cursor >= 0 && m.Cursor < len(m.Rows) {
-		return m.Rows[m.Cursor].Name
+func (m *Model) ExpandedName() string {
+	return m.Expanded
+}
+
+func (m *Model) ExpandedIndex() int {
+	for i, row := range m.Rows {
+		if row.Name == m.Expanded {
+			return i
+		}
 	}
-	return ""
+	return -1
 }
 
 func (m *Model) ClampChoice() {
@@ -590,9 +644,40 @@ func Hit(m Model, width, height, x, y int) (Target, int) {
 		return HitDimMemory, 0
 	}
 	if y >= rowTop && y < rowTop+g.room && x < g.total {
-		index := m.Offset + (y - rowTop)
-		if index < len(m.Rows) {
-			return HitRow, index
+		offset := m.Offset
+		if offset > len(m.Rows)-g.room {
+			offset = len(m.Rows) - g.room
+		}
+		if offset < 0 {
+			offset = 0
+		}
+
+		slots := visibleSlots(m, offset, g.room)
+		index := y - rowTop
+		if index < len(slots) {
+			sl := slots[index]
+			if !sl.action {
+				if x < g.widths[0] {
+					return HitPodName, sl.row
+				}
+				return HitRow, sl.row
+			}
+
+			first, second, third := actionRects(m)
+			switch {
+			case x >= first.x && x < first.x+first.w:
+				if m.Confirm != ActionNone {
+					return HitConfirmYes, sl.row
+				}
+				return HitActionInspect, sl.row
+			case x >= second.x && x < second.x+second.w:
+				if m.Confirm != ActionNone {
+					return HitConfirmCancel, sl.row
+				}
+				return HitActionRestart, sl.row
+			case m.Confirm == ActionNone && x >= third.x && x < third.x+third.w:
+				return HitActionTerminate, sl.row
+			}
 		}
 	}
 	return HitNone, 0
@@ -684,6 +769,61 @@ func drawBox(s tcell.Screen, box rect, focused bool) {
 	}
 }
 
+const (
+	inspectLabel   = "[ Inspect ]"
+	restartLabel   = "[ Restart ]"
+	terminateLabel = "[ Terminate ]"
+	yesLabel       = "[ Yes ]"
+	cancelLabel    = "[ Cancel ]"
+	actionIndent   = 2
+	actionGap      = 2
+)
+
+func actionRects(m Model) (rect, rect, rect) {
+	y := 0
+	if m.Confirm != ActionNone {
+		question := confirmQuestion(m)
+		yes := rect{x: actionIndent + len([]rune(question)) + actionGap, y: y, w: len(yesLabel), h: 1}
+		cancel := rect{x: yes.x + yes.w + actionGap, y: y, w: len(cancelLabel), h: 1}
+		return yes, cancel, rect{}
+	}
+	inspect := rect{x: actionIndent, y: y, w: len(inspectLabel), h: 1}
+	restart := rect{x: inspect.x + inspect.w + actionGap, y: y, w: len(restartLabel), h: 1}
+	terminate := rect{x: restart.x + restart.w + actionGap, y: y, w: len(terminateLabel), h: 1}
+	return inspect, restart, terminate
+}
+
+func confirmQuestion(m Model) string {
+	what := "Restart"
+	if m.Confirm == ActionTerminate {
+		what = "Terminate"
+	}
+	return what + " " + m.ExpandedName() + "?"
+}
+
+func drawActions(s tcell.Screen, m Model, g geometry, y int) {
+	for x := 0; x < g.total; x++ {
+		s.SetContent(x, y, ' ', nil, styleBase)
+	}
+
+	if m.Confirm != ActionNone {
+		yes, cancel, _ := actionRects(m)
+		style := styleWarn
+		if m.Confirm == ActionTerminate {
+			style = styleBad
+		}
+		puts(s, actionIndent, y, 0, false, confirmQuestion(m), style)
+		puts(s, yes.x, y, 0, false, yesLabel, style.Bold(true))
+		puts(s, cancel.x, y, 0, false, cancelLabel, styleDim)
+		return
+	}
+
+	inspect, restart, terminate := actionRects(m)
+	puts(s, inspect.x, y, 0, false, inspectLabel, styleChoice)
+	puts(s, restart.x, y, 0, false, restartLabel, styleWarn)
+	puts(s, terminate.x, y, 0, false, terminateLabel, styleBad)
+}
+
 func drawDropdown(s tcell.Screen, g geometry, m Model) {
 	if g.dropdown.h == 0 {
 		return
@@ -698,7 +838,7 @@ func drawDropdown(s tcell.Screen, g geometry, m Model) {
 		index := offset + i
 		style := styleDropdown
 		if index == m.Choice {
-			style = styleSelected
+			style = styleChosen
 		}
 		puts(s, box.x, y, 0, false, "│", styleDim)
 		text := ""
@@ -743,6 +883,11 @@ func repeat(s string, n int) string {
 
 func Draw(s tcell.Screen, m Model) {
 	s.Clear()
+	if m.Screen == ScreenInspect {
+		drawInspect(s, m)
+		return
+	}
+
 	width, height := s.Size()
 	g := geom(m, width, height)
 	total := g.total
@@ -829,6 +974,8 @@ func Draw(s tcell.Screen, m Model) {
 		switch {
 		case m.Err != "":
 			empty = ""
+		case !m.Loaded:
+			empty = "asking the cluster for pods..."
 		case m.Level != kube.LevelAll && len(m.All) > 0:
 			empty = emptyLevelText(m.Level, m.Dimension)
 		case m.PodQuery != "" && len(m.All) > 0:
@@ -837,15 +984,14 @@ func Draw(s tcell.Screen, m Model) {
 		puts(s, 0, rowTop, 0, false, empty, styleDim)
 	}
 
-	for i := 0; i < g.room && offset+i < len(m.Rows); i++ {
-		row := m.Rows[offset+i]
+	for i, sl := range visibleSlots(m, offset, g.room) {
 		y := rowTop + i
-		selected := m.Cursor >= 0 && offset+i == m.Cursor
-		if selected {
-			for cx := 0; cx < total; cx++ {
-				s.SetContent(cx, y, ' ', nil, styleSelected)
-			}
+		if sl.action {
+			drawActions(s, m, g, y)
+			continue
 		}
+
+		row := m.Rows[sl.row]
 		x = 0
 		for ci, c := range g.cols {
 			text, style := c.value(row)
@@ -855,15 +1001,10 @@ func Draw(s tcell.Screen, m Model) {
 			if c.center {
 				text = centerText(text, g.widths[ci])
 			}
-			if selected {
-				style = onSelection(style, c.tinted)
+			if c.key == "name" && m.Rows[sl.row].Name == m.Expanded {
+				style = styleChoice
 			}
 			x += puts(s, x, y, g.widths[ci], c.right, text, style)
-			if selected {
-				for gp := 0; gp < gap && x+gp < total; gp++ {
-					s.SetContent(x+gp, y, ' ', nil, styleSelected)
-				}
-			}
 			x += gap
 		}
 	}
@@ -937,24 +1078,6 @@ func justify(items []string, width int) string {
 }
 
 const dimensionPrefix = "   issues regarding "
-
-func onSelection(style tcell.Style, tinted bool) tcell.Style {
-	fg, _, attrs := style.Decompose()
-	ink := inkColor
-	if tinted {
-		switch fg {
-		case tcell.ColorRed:
-			ink = tcell.Color88
-		case warnColor:
-			ink = tcell.Color94
-		case tcell.ColorGreen:
-			ink = tcell.Color22
-		case tcell.ColorGray:
-			ink = tcell.Color238
-		}
-	}
-	return tcell.StyleDefault.Background(selectedColor).Foreground(ink).Bold(attrs&tcell.AttrBold != 0)
-}
 
 func pickStyle(base tcell.Style, active bool) tcell.Style {
 	if active {

@@ -44,6 +44,7 @@ func model(rows []kube.Row) Model {
 	m := Model{
 		Namespace: "production",
 		All:       rows,
+		Loaded:    true,
 		Now:       time.Now(),
 	}
 	ApplyFilter(&m)
@@ -298,15 +299,19 @@ func TestHitFindsInputsRowsAndDropdown(t *testing.T) {
 	if target, _ := Hit(m, 170, 40, 3, linePods); target != HitPodInput {
 		t.Errorf("click on the pod box: %v", target)
 	}
-	if target, index := Hit(m, 170, 40, 5, rowTop+2); target != HitRow || index != 2 {
-		t.Errorf("click on a row: %v %d", target, index)
+	if target, index := Hit(m, 170, 40, 5, rowTop+2); target != HitPodName || index != 2 {
+		t.Errorf("click on a pod name: %v %d", target, index)
+	}
+	if target, _ := Hit(m, 170, 40, 120, rowTop+2); target != HitRow {
+		t.Errorf("click outside the name column: %v", target)
 	}
 	if target, _ := Hit(m, 170, 40, 5, lineTitle); target != HitNone {
 		t.Errorf("click on the title must do nothing: %v", target)
 	}
 
-	m.Offset = 3
-	if _, index := Hit(m, 170, 40, 5, rowTop); index != 3 {
+	scrolled := model(sample(40))
+	scrolled.Offset = 3
+	if _, index := Hit(scrolled, 170, 40, 5, rowTop); index != 3 {
 		t.Errorf("scrolled table must map clicks through the offset, got %d", index)
 	}
 
@@ -377,37 +382,6 @@ func TestDrawNarrowDropsColumnsAndFits(t *testing.T) {
 	}
 }
 
-func TestDrawScrollsAndMarksCursor(t *testing.T) {
-	m := model(sample(40))
-	m.Offset = 10
-	m.Cursor = 12
-
-	lines, screen := draw(t, 170, 22, m)
-
-	if !strings.Contains(lines[rowTop], "pod-10") {
-		t.Errorf("first visible row should be pod-10: %q", lines[rowTop])
-	}
-	room := Visible(22)
-	last := rowTop + room - 1
-	if !strings.Contains(lines[last], fmt.Sprintf("pod-%02d", 10+room-1)) {
-		t.Errorf("last visible row: %q", lines[last])
-	}
-	if !strings.Contains(lines[21], "more") {
-		t.Errorf("footer should report hidden rows: %q", lines[21])
-	}
-
-	cells, w, _ := screen.GetContents()
-	cursorY := rowTop + (12 - 10)
-	for x := 0; x < 40; x++ {
-		if _, bg, _ := cells[cursorY*w+x].Style.Decompose(); bg != selectedColor {
-			t.Fatalf("selected row must be shaded across its full width, column %d has %v", x, bg)
-		}
-	}
-	if _, bg, _ := cells[(cursorY+1)*w].Style.Decompose(); bg == selectedColor {
-		t.Error("only the selected row may be shaded")
-	}
-}
-
 func TestDrawErrorAndNote(t *testing.T) {
 	m := model(nil)
 	m.Err = "no permission to list pods in namespace production"
@@ -431,18 +405,6 @@ func TestDrawEmptyNamespace(t *testing.T) {
 	}
 	if !strings.Contains(lines[lineStatus], "0 critical") {
 		t.Errorf("counters with no rows: %q", lines[lineStatus])
-	}
-}
-
-func TestSelectedName(t *testing.T) {
-	m := model(sample(3))
-	m.Cursor = 2
-	if got := m.SelectedName(); !strings.HasPrefix(got, "pod-02") {
-		t.Errorf("SelectedName = %q", got)
-	}
-	m.Cursor = 99
-	if got := m.SelectedName(); got != "" {
-		t.Errorf("out of range cursor must give an empty name, got %q", got)
 	}
 }
 
@@ -642,18 +604,18 @@ func TestTableFillsTheTerminalWidth(t *testing.T) {
 	}
 }
 
-func TestSelectedRowIsShadedToTheScreenEdge(t *testing.T) {
-	m := model(sample(4))
-	m.Cursor = 1
+func TestNoRowIsEverShaded(t *testing.T) {
+	m := model(sample(6))
+	m.Expanded = m.Rows[2].Name
 
-	width := 220
-	_, screen := draw(t, width, 30, m)
-	cells, w, _ := screen.GetContents()
-	y := rowTop + 1
+	_, screen := draw(t, 170, 30, m)
+	cells, w, h := screen.GetContents()
 
-	for x := 0; x < width-1; x++ {
-		if _, bg, _ := cells[y*w+x].Style.Decompose(); bg != selectedColor {
-			t.Fatalf("column %d of the selected row is not shaded", x)
+	for y := rowTop; y < h-1; y++ {
+		for x := 0; x < 80; x++ {
+			if _, bg, _ := cells[y*w+x].Style.Decompose(); bg != tcell.ColorDefault {
+				t.Fatalf("row %d column %d is painted, rows must stay plain", y, x)
+			}
 		}
 	}
 }
@@ -1133,123 +1095,6 @@ func TestUptimeHiddenWithoutAStart(t *testing.T) {
 	}
 }
 
-func TestSelectedRowKeepsItsMeaningInDarkInk(t *testing.T) {
-	rows := sample(2)
-	rows[0].Severity = kube.Bad
-	rows[0].CPUPct, rows[0].MemPct, rows[0].Worst = 95, 10, 95
-
-	m := model(rows)
-	m.Cursor = 0
-
-	lines, screen := draw(t, 170, 30, m)
-	cells, w, _ := screen.GetContents()
-
-	for x := 0; x < 60; x++ {
-		fg, bg, _ := cells[rowTop*w+x].Style.Decompose()
-		if bg != selectedColor {
-			t.Fatalf("column %d of the selected row is not on the light bar", x)
-		}
-		if fg == tcell.ColorWhite || fg == warnColor {
-			t.Fatalf("column %d keeps a light ink on a light bar", x)
-		}
-	}
-
-	column := strings.Index(lines[lineHeader], "STATUS")
-	if fg, _, _ := cells[rowTop*w+column].Style.Decompose(); fg != tcell.Color88 {
-		t.Errorf("a broken pod must stay red, in a darker red: %v", fg)
-	}
-}
-
-func TestSelectionInkPerColumn(t *testing.T) {
-	rows := sample(2)
-	rows[0].Severity = kube.Bad
-	rows[0].Status = "CrashLoopBackOff"
-	rows[0].CPUPct, rows[0].MemPct, rows[0].Worst = 95, 80, 95
-	rows[0].Restarts, rows[0].NewRestarts, rows[0].OOMs = 12, 2, 3
-
-	m := model(rows)
-	m.Cursor = 0
-
-	lines, screen := draw(t, 170, 30, m)
-	cells, w, _ := screen.GetContents()
-	header := lines[lineHeader]
-
-	inkAt := func(column int) tcell.Color {
-		fg, bg, _ := cells[rowTop*w+column].Style.Decompose()
-		if bg != selectedColor {
-			t.Fatalf("column %d is not on the bar", column)
-		}
-		return fg
-	}
-
-	black := []struct {
-		name  string
-		start int
-	}{
-		{"POD", 0},
-		{"CPU", strings.Index(header, "CPU") + 2},
-		{"MEM", strings.Index(header, "MEM") + 2},
-		{"RESTART CTR", strings.Index(lines[rowTop], "12 +2")},
-		{"OOM CTR", strings.Index(header, "OOM CTR") + 3},
-		{"EXIT", strings.Index(header, "EXIT")},
-		{"LAST RESTART", strings.Index(header, "LAST RESTART")},
-	}
-	for _, c := range black {
-		if got := inkAt(c.start); got != inkColor {
-			t.Errorf("%s must turn black on the bar, got %v", c.name, got)
-		}
-	}
-
-	status := strings.Index(header, "STATUS")
-	if got := inkAt(status); got != tcell.Color88 {
-		t.Errorf("STATUS keeps its meaning in a dark red, got %v", got)
-	}
-	cpuPct := strings.Index(header, "%LIM") + 3
-	if got := inkAt(cpuPct); got != tcell.Color88 {
-		t.Errorf("a critical %%LIM stays red, got %v", got)
-	}
-	memPct := strings.LastIndex(header, "%LIM") + 3
-	if got := inkAt(memPct); got != tcell.Color94 {
-		t.Errorf("a warning %%LIM stays amber, got %v", got)
-	}
-}
-
-func TestSelectionBarIsMuted(t *testing.T) {
-	if selectedColor != tcell.Color248 {
-		t.Errorf("the bar must stay a muted grey, got %v", selectedColor)
-	}
-	if inkColor != tcell.Color16 {
-		t.Errorf("the ink must be black, got %v", inkColor)
-	}
-}
-
-func TestNoRowIsShadedWithoutASelection(t *testing.T) {
-	m := model(sample(4))
-	m.Cursor = -1
-
-	_, screen := draw(t, 170, 30, m)
-	cells, w, h := screen.GetContents()
-
-	for y := rowTop; y < h-1; y++ {
-		for x := 0; x < 60; x++ {
-			if _, bg, _ := cells[y*w+x].Style.Decompose(); bg == selectedColor {
-				t.Fatalf("row %d is shaded although nothing is selected", y)
-			}
-		}
-	}
-}
-
-func TestScrollingWithoutASelectionStillShowsRows(t *testing.T) {
-	m := model(sample(40))
-	m.Cursor = -1
-	m.Offset = 5
-
-	lines, _ := draw(t, 170, 30, m)
-	if !strings.Contains(lines[rowTop], "pod-05") {
-		t.Errorf("the view must follow the offset: %q", lines[rowTop])
-	}
-}
-
 func TestPodFrameMatchesThePodColumn(t *testing.T) {
 	for _, width := range []int{110, 160, 210, 260} {
 		m := model(sample(3))
@@ -1303,4 +1148,427 @@ func TestNamespaceUsesTheClockColour(t *testing.T) {
 	if labelFg == nameFg {
 		t.Error("the words around it stay dim")
 	}
+}
+
+func TestActionRowOpensUnderThePod(t *testing.T) {
+	m := model(sample(5))
+	m.Expanded = m.Rows[1].Name
+
+	lines, _ := draw(t, 170, 30, m)
+
+	if !strings.Contains(lines[rowTop+1], "pod-01") {
+		t.Fatalf("the pod stays where it was: %q", lines[rowTop+1])
+	}
+	actions := lines[rowTop+2]
+	for _, want := range []string{"[ Inspect ]", "[ Restart ]", "[ Terminate ]"} {
+		if !strings.Contains(actions, want) {
+			t.Errorf("action row missing %q: %q", want, actions)
+		}
+	}
+	if !strings.Contains(lines[rowTop+3], "pod-02") {
+		t.Errorf("the rest of the table shifts down by one: %q", lines[rowTop+3])
+	}
+}
+
+func TestActionRowHitTesting(t *testing.T) {
+	m := model(sample(4))
+	m.Expanded = m.Rows[0].Name
+
+	lines, _ := draw(t, 170, 30, m)
+	actions := lines[rowTop+1]
+
+	cases := []struct {
+		label  string
+		target Target
+	}{
+		{"[ Inspect ]", HitActionInspect},
+		{"[ Restart ]", HitActionRestart},
+		{"[ Terminate ]", HitActionTerminate},
+	}
+	for _, c := range cases {
+		x := strings.Index(actions, c.label) + 2
+		if target, index := Hit(m, 170, 30, x, rowTop+1); target != c.target || index != 0 {
+			t.Errorf("click on %s: got %v %d", c.label, target, index)
+		}
+	}
+	if target, _ := Hit(m, 170, 30, 70, rowTop+1); target != HitNone {
+		t.Errorf("empty space on the action row does nothing: %v", target)
+	}
+}
+
+func TestConfirmationReplacesTheButtons(t *testing.T) {
+	m := model(sample(3))
+	m.Expanded = m.Rows[0].Name
+	m.Confirm = ActionTerminate
+
+	lines, _ := draw(t, 170, 30, m)
+	row := lines[rowTop+1]
+
+	if !strings.Contains(row, "Terminate "+m.Rows[0].Name+"?") {
+		t.Errorf("the question must name the pod: %q", row)
+	}
+	for _, want := range []string{"[ Yes ]", "[ Cancel ]"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("confirmation missing %q: %q", want, row)
+		}
+	}
+	if strings.Contains(row, "[ Inspect ]") {
+		t.Errorf("the buttons must step aside: %q", row)
+	}
+
+	yes := strings.Index(row, "[ Yes ]") + 2
+	if target, _ := Hit(m, 170, 30, yes, rowTop+1); target != HitConfirmYes {
+		t.Errorf("click on Yes: %v", target)
+	}
+	cancel := strings.Index(row, "[ Cancel ]") + 2
+	if target, _ := Hit(m, 170, 30, cancel, rowTop+1); target != HitConfirmCancel {
+		t.Errorf("click on Cancel: %v", target)
+	}
+}
+
+func TestEmptyTableSaysWhyItIsEmpty(t *testing.T) {
+	loading := model(nil)
+	loading.Loaded = false
+	lines, _ := draw(t, 170, 30, loading)
+	if !strings.Contains(lines[rowTop], "asking the cluster for pods") {
+		t.Errorf("before the first answer: %q", lines[rowTop])
+	}
+
+	loaded := model(nil)
+	lines, _ = draw(t, 170, 30, loaded)
+	if !strings.Contains(lines[rowTop], "no pods in this namespace") {
+		t.Errorf("after the first answer: %q", lines[rowTop])
+	}
+}
+
+func inspecting() Model {
+	m := model(sample(2))
+	m.Screen = ScreenInspect
+	m.Inspect = Inspection{
+		Pod:       "api-worker-1",
+		Container: "app",
+		Default:   []string{"POD", "  name               api-worker-1", "  namespace          production"},
+		Textual:   []string{"Pod api-worker-1 lives in namespace production, created 3m ago and runs on node worker-02."},
+		Yaml:      []string{"apiVersion: v1", "kind: Pod", "metadata:", "  name: api-worker-1"},
+		Logs: []LogLine{
+			{Time: "18:00:01", Text: "listening on :8000"},
+			{Time: "18:00:02", Text: "GET /health 200"},
+			{Time: "18:00:03", Text: "worker started"},
+		},
+	}
+	return m
+}
+
+func TestInspectHasTwoFramedPanes(t *testing.T) {
+	lines, _ := draw(t, 140, 28, inspecting())
+
+	top := lines[inspectTop]
+	if strings.Count(top, "┌") != 2 || strings.Count(top, "┐") != 2 {
+		t.Fatalf("two frames must open on the same line: %q", top)
+	}
+	if !strings.Contains(top, "config") || !strings.Contains(top, "logs") {
+		t.Errorf("the frames must be labelled: %q", top)
+	}
+
+	body := strings.Join(lines, "\n")
+	if !strings.Contains(body, "name               api-worker-1") {
+		t.Error("config belongs in the left pane")
+	}
+	if !strings.Contains(body, "listening on :8000") {
+		t.Error("logs belong in the right pane")
+	}
+
+	g := inspectGeom(140, 28)
+	configColumn := strings.Index(lines[inspectTop+1], "POD")
+	if configColumn >= g.right.x {
+		t.Errorf("config drifted into the log pane at column %d", configColumn)
+	}
+	logColumn := strings.Index(lines[inspectTop+1], "listening")
+	if logColumn >= 0 && logColumn < g.right.x {
+		t.Errorf("logs drifted into the config pane at column %d", logColumn)
+	}
+}
+
+func TestInspectFormatButtons(t *testing.T) {
+	m := inspecting()
+	lines, _ := draw(t, 140, 28, m)
+	buttons := lines[26]
+
+	for _, want := range []string{"[ default ]", "[ textual ]", "[ yaml ]"} {
+		if !strings.Contains(buttons, want) {
+			t.Errorf("missing %q: %q", want, buttons)
+		}
+	}
+	if strings.Contains(buttons, "readable") {
+		t.Errorf("the old name must be gone: %q", buttons)
+	}
+
+	for _, c := range []struct {
+		label  string
+		target Target
+	}{
+		{"[ default ]", HitFormatDefault},
+		{"[ textual ]", HitFormatTextual},
+		{"[ yaml ]", HitFormatYAML},
+	} {
+		x := strings.Index(buttons, c.label) + 2
+		if got := HitInspect(140, 28, x, 26); got != c.target {
+			t.Errorf("click on %s: %v", c.label, got)
+		}
+	}
+}
+
+func TestInspectShowsEachFormat(t *testing.T) {
+	m := inspecting()
+
+	lines, _ := draw(t, 140, 28, m)
+	if !strings.Contains(strings.Join(lines, "\n"), "name               api-worker-1") {
+		t.Error("default format must be the structured one")
+	}
+
+	m.Inspect.Format = FormatTextual
+	lines, _ = draw(t, 140, 28, m)
+	if !strings.Contains(strings.Join(lines, "\n"), "Pod api-worker-1 lives in namespace") {
+		t.Error("textual format must read as sentences")
+	}
+
+	m.Inspect.Format = FormatYAML
+	lines, _ = draw(t, 140, 28, m)
+	if !strings.Contains(strings.Join(lines, "\n"), "apiVersion: v1") {
+		t.Error("yaml format must show the manifest")
+	}
+}
+
+func TestInspectLogSearchLivesInsideTheLogPane(t *testing.T) {
+	m := inspecting()
+	g := inspectGeom(140, 28)
+
+	lines, _ := draw(t, 140, 28, m)
+	if !strings.Contains(lines[g.search.y], logPlaceholder) {
+		t.Errorf("the search box must sit at the bottom of the pane: %q", lines[g.search.y])
+	}
+	separator := lines[g.right.y+g.right.h-3]
+	if !strings.Contains(separator, "├") || !strings.Contains(separator, "┤") {
+		t.Errorf("a line must fence the search off from the stream: %q", separator)
+	}
+	if g.search.y >= 28-2 {
+		t.Error("the search box must stay inside the pane, not below it")
+	}
+
+	if got := HitInspect(140, 28, g.search.x+2, g.search.y); got != HitLogSearch {
+		t.Errorf("click on the search box: %v", got)
+	}
+
+	m.Inspect.LogQuery = "health"
+	filtered := m.Inspect.VisibleLogs()
+	if len(filtered) != 1 || !strings.Contains(filtered[0].Text, "GET /health") {
+		t.Errorf("the query must filter the stream, got %v", filtered)
+	}
+
+	lines, _ = draw(t, 140, 28, m)
+	body := strings.Join(lines, "\n")
+	if strings.Contains(body, "listening on :8000") {
+		t.Error("lines that do not match must be hidden")
+	}
+	if !strings.Contains(body, "GET /health 200") {
+		t.Error("matching lines stay")
+	}
+}
+
+func TestInspectLogsWaitAndReportProblems(t *testing.T) {
+	m := inspecting()
+	m.Inspect.Logs = nil
+
+	lines, _ := draw(t, 140, 28, m)
+	if !strings.Contains(strings.Join(lines, "\n"), "waiting for output") {
+		t.Error("an empty stream must say it is waiting")
+	}
+
+	m.Inspect.LogErr = "no permission to read the logs of api-worker-1"
+	lines, _ = draw(t, 140, 28, m)
+	if !strings.Contains(strings.Join(lines, "\n"), "no permission to read the logs") {
+		t.Error("a broken stream must show the reason")
+	}
+}
+
+func TestInspectWrapsLongLines(t *testing.T) {
+	m := inspecting()
+	m.Inspect.Format = FormatTextual
+	m.Inspect.Textual = []string{strings.Repeat("word ", 60)}
+
+	lines, _ := draw(t, 140, 28, m)
+	g := inspectGeom(140, 28)
+
+	filled := 0
+	for i := 0; i < g.room; i++ {
+		if strings.TrimSpace(lines[inspectTop+1+i]) != "" {
+			filled++
+		}
+	}
+	if filled < 2 {
+		t.Error("a long sentence must be wrapped over several lines")
+	}
+	for i := 0; i < g.room; i++ {
+		line := []rune(lines[inspectTop+1+i])
+		if len(line) <= g.left.w-1 {
+			continue
+		}
+		if line[g.left.w-1] != '\u2502' {
+			t.Fatalf("wrapped text broke through the frame: %q", string(line))
+		}
+	}
+}
+
+func styleAt(t *testing.T, screen tcell.SimulationScreen, line string, needle string, y int) tcell.Style {
+	t.Helper()
+	at := strings.Index(line, needle)
+	if at < 0 {
+		t.Fatalf("%q not found in %q", needle, line)
+	}
+	column := len([]rune(line[:at]))
+	cells, w, _ := screen.GetContents()
+	return cells[y*w+column].Style
+}
+
+func TestConfigColoursWhatMatters(t *testing.T) {
+	m := inspecting()
+	m.Inspect.Default = []string{
+		"POD",
+		"  status             CrashLoopBackOff",
+		"  qos class          BestEffort",
+		"  restarts           4",
+		"  node               worker-02",
+		"",
+		"CONDITIONS",
+		"  Ready              False (ContainersNotReady)",
+	}
+
+	lines, screen := draw(t, 140, 28, m)
+	row := func(needle string) (string, int) {
+		for i, line := range lines {
+			if strings.Contains(line, needle) {
+				return line, i
+			}
+		}
+		t.Fatalf("%q is not on screen", needle)
+		return "", 0
+	}
+
+	line, y := row("CrashLoopBackOff")
+	if fg, _, _ := styleAt(t, screen, line, "CrashLoopBackOff", y).Decompose(); fg != tcell.ColorRed {
+		t.Errorf("a broken status must be red, got %v", fg)
+	}
+	line, y = row("BestEffort")
+	if fg, _, _ := styleAt(t, screen, line, "BestEffort", y).Decompose(); fg != warnColor {
+		t.Errorf("BestEffort deserves a warning colour, got %v", fg)
+	}
+	line, y = row("restarts")
+	if fg, _, _ := styleAt(t, screen, line, "4", y).Decompose(); fg != warnColor {
+		t.Errorf("restarts above zero must stand out, got %v", fg)
+	}
+	line, y = row("Ready  ")
+	if fg, _, _ := styleAt(t, screen, line, "False", y).Decompose(); fg != warnColor {
+		t.Errorf("a false condition must stand out, got %v", fg)
+	}
+	line, y = row("  node")
+	if fg, _, _ := styleAt(t, screen, line, "node", y).Decompose(); fg != tcell.ColorGray {
+		t.Errorf("labels stay dim, got %v", fg)
+	}
+}
+
+func TestTextualColoursTheTellingWords(t *testing.T) {
+	m := inspecting()
+	m.Inspect.Format = FormatTextual
+	m.Inspect.Textual = []string{
+		"It is Running with 1 of 1 containers ready.",
+		"Container app runs image, restarted 3 times, with no limits set.",
+		"Worth a look: app was killed for using too much memory.",
+	}
+
+	lines, screen := draw(t, 140, 28, m)
+	find := func(needle string) (string, int) {
+		for i, line := range lines {
+			if strings.Contains(line, needle) {
+				return line, i
+			}
+		}
+		t.Fatalf("%q is not on screen", needle)
+		return "", 0
+	}
+
+	line, y := find("Running")
+	if fg, _, _ := styleAt(t, screen, line, "Running", y).Decompose(); fg != tcell.ColorGreen {
+		t.Errorf("Running must be green, got %v", fg)
+	}
+	line, y = find("no limits set")
+	if fg, _, _ := styleAt(t, screen, line, "with no limits set", y).Decompose(); fg != warnColor {
+		t.Errorf("missing limits must be amber, got %v", fg)
+	}
+	line, y = find("too much memory")
+	if fg, _, _ := styleAt(t, screen, line, "killed for using too much memory", y).Decompose(); fg != tcell.ColorRed {
+		t.Errorf("an OOM sentence must be red, got %v", fg)
+	}
+	line, y = find("Container app")
+	if fg, _, _ := styleAt(t, screen, line, "Container app runs", y).Decompose(); fg != tcell.ColorDefault {
+		t.Errorf("ordinary prose stays plain, got %v", fg)
+	}
+}
+
+func TestYamlKeysAreColoured(t *testing.T) {
+	m := inspecting()
+	m.Inspect.Format = FormatYAML
+	m.Inspect.Yaml = []string{"kind: Pod", "  phase: Running"}
+
+	lines, screen := draw(t, 140, 28, m)
+	for i, line := range lines {
+		if strings.Contains(line, "kind: Pod") {
+			if fg, _, _ := styleAt(t, screen, line, "kind:", i).Decompose(); fg != tcell.Color231 {
+				t.Errorf("yaml keys must stand out, got %v", fg)
+			}
+		}
+		if strings.Contains(line, "phase: Running") {
+			if fg, _, _ := styleAt(t, screen, line, "Running", i).Decompose(); fg != tcell.ColorGreen {
+				t.Errorf("a telling value keeps its colour, got %v", fg)
+			}
+		}
+	}
+}
+
+func TestLogMatchesAreHighlighted(t *testing.T) {
+	m := inspecting()
+	m.Inspect.LogQuery = "health"
+
+	lines, screen := draw(t, 140, 28, m)
+	for i, line := range lines {
+		if !strings.Contains(line, "GET /health") {
+			continue
+		}
+		if _, bg, _ := styleAt(t, screen, line, "health", i).Decompose(); bg != warnColor {
+			t.Errorf("the match must be highlighted, got background %v", bg)
+		}
+		if _, bg, _ := styleAt(t, screen, line, "GET ", i).Decompose(); bg == warnColor {
+			t.Error("only the match may be highlighted")
+		}
+		return
+	}
+	t.Fatal("the matching line is not on screen")
+}
+
+func TestLogTimestampsAreDrawnQuietly(t *testing.T) {
+	m := inspecting()
+
+	lines, screen := draw(t, 140, 28, m)
+	for i, line := range lines {
+		if !strings.Contains(line, "worker started") {
+			continue
+		}
+		if !strings.Contains(line, "18:00:03") {
+			t.Fatalf("the line must carry its time: %q", line)
+		}
+		if fg, _, _ := styleAt(t, screen, line, "18:00:03", i).Decompose(); fg != tcell.ColorGray {
+			t.Errorf("the time must stay quiet, got %v", fg)
+		}
+		return
+	}
+	t.Fatal("the log line is not on screen")
 }

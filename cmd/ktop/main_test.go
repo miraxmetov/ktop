@@ -43,10 +43,10 @@ func testApp(t *testing.T, names ...string) *app {
 		interval:   2 * time.Second,
 		pods:       make(chan podResult, 4),
 		namespaces: make(chan namespaceResult, 4),
+		inspected:  make(chan inspectResult, 4),
 		model: &ui.Model{
 			Namespace: "production",
 			All:       rows,
-			Cursor:    noSelection,
 		},
 	}
 	ui.ApplyFilter(a.model)
@@ -117,13 +117,13 @@ func TestPodSearchFiltersAndRestoresTable(t *testing.T) {
 	if len(a.model.Rows) != 2 {
 		t.Fatalf("filter must survive Enter, got %d rows", len(a.model.Rows))
 	}
-	if a.model.Cursor != 0 {
-		t.Fatalf("Enter must land on the highlighted pod, got %d", a.model.Cursor)
+	if a.model.Expanded != "api-worker-1" {
+		t.Fatalf("Enter must open the actions of the chosen pod, got %q", a.model.Expanded)
 	}
 
 	press(a, tcell.KeyEscape, 0)
-	if a.model.Cursor != noSelection {
-		t.Fatalf("the first Esc drops the selection, got %d", a.model.Cursor)
+	if a.model.Expanded != "" {
+		t.Fatalf("the first Esc closes them, got %q", a.model.Expanded)
 	}
 
 	press(a, tcell.KeyEscape, 0)
@@ -174,7 +174,7 @@ func TestNamespaceSearchSwitchesNamespace(t *testing.T) {
 	if a.model.NamespaceQuery != "" || a.model.Focus != ui.FocusTable {
 		t.Fatalf("input must reset: query %q focus %v", a.model.NamespaceQuery, a.model.Focus)
 	}
-	if len(a.model.All) != 0 || a.model.Cursor != noSelection {
+	if len(a.model.All) != 0 || a.model.Expanded != "" {
 		t.Fatal("rows of the previous namespace must be dropped")
 	}
 
@@ -226,30 +226,6 @@ func TestNamespaceSearchEscapeKeepsNamespace(t *testing.T) {
 	}
 	if a.model.Focus != ui.FocusTable {
 		t.Fatal("Esc must return focus to the table")
-	}
-}
-
-func TestRefreshKeepsCursorOnTheSamePod(t *testing.T) {
-	a := testApp(t, "api-1", "api-2", "web-1")
-	a.model.Cursor = 2
-	if a.model.SelectedName() != "web-1" {
-		t.Fatalf("selected %q", a.model.SelectedName())
-	}
-
-	a.model.All = []kube.Row{
-		{Name: "api-3", CPUPct: -1, MemPct: -1, Worst: -1},
-		{Name: "web-1", CPUPct: -1, MemPct: -1, Worst: -1},
-	}
-	a.reselect()
-
-	if a.model.SelectedName() != "web-1" {
-		t.Fatalf("cursor must follow the pod name, selected %q", a.model.SelectedName())
-	}
-
-	a.model.All = []kube.Row{{Name: "api-3", CPUPct: -1, MemPct: -1, Worst: -1}}
-	a.reselect()
-	if a.model.Cursor != noSelection {
-		t.Fatalf("a vanished pod must leave nothing selected, got %d", a.model.Cursor)
 	}
 }
 
@@ -305,8 +281,8 @@ func TestTabCompletesTheHighlightedPod(t *testing.T) {
 	}
 
 	press(a, tcell.KeyEnter, 0)
-	if a.model.Focus != ui.FocusTable || a.model.SelectedName() != "api-worker-1" {
-		t.Fatalf("Enter after completion: focus %v, selected %q", a.model.Focus, a.model.SelectedName())
+	if a.model.Focus != ui.FocusTable || a.model.Expanded != "api-worker-1" {
+		t.Fatalf("Enter after completion: focus %v, expanded %q", a.model.Focus, a.model.Expanded)
 	}
 }
 
@@ -412,18 +388,6 @@ func TestClickOnDropdownSwitchesNamespace(t *testing.T) {
 	}
 }
 
-func TestClickOnRowMovesCursor(t *testing.T) {
-	a := testApp(t, "api-1", "api-2", "web-1", "cache-1")
-
-	click(a, 4, 12+2)
-	if a.model.Cursor != 2 {
-		t.Fatalf("cursor after the click: %d", a.model.Cursor)
-	}
-	if a.model.Focus != ui.FocusTable {
-		t.Fatal("clicking a row must focus the table")
-	}
-}
-
 func TestWheelScrollsWithoutSelecting(t *testing.T) {
 	names := make([]string, 0, 40)
 	for i := 0; i < 40; i++ {
@@ -436,8 +400,8 @@ func TestWheelScrollsWithoutSelecting(t *testing.T) {
 	if a.model.Offset != 1 {
 		t.Fatalf("one notch must scroll one row, got offset %d", a.model.Offset)
 	}
-	if a.model.Cursor != noSelection {
-		t.Fatalf("scrolling must not select anything, got %d", a.model.Cursor)
+	if a.model.Expanded != "" {
+		t.Fatalf("scrolling must not open any actions, got %q", a.model.Expanded)
 	}
 
 	a.handleMouse(tcell.NewEventMouse(5, 12, tcell.WheelUp, tcell.ModNone))
@@ -453,50 +417,8 @@ func TestWheelScrollsWithoutSelecting(t *testing.T) {
 	}
 }
 
-func TestNothingIsSelectedUntilYouAskForIt(t *testing.T) {
-	a := testApp(t, "api-1", "api-2", "web-1")
-
-	if a.model.Cursor != noSelection {
-		t.Fatalf("a fresh table must have no selection, got %d", a.model.Cursor)
-	}
-
-	click(a, 4, 12)
-	if a.model.Cursor != 0 || a.model.SelectedName() != "api-1" {
-		t.Fatalf("a click must select that row, got %d %q", a.model.Cursor, a.model.SelectedName())
-	}
-
-	if quit := press(a, tcell.KeyEscape, 0); quit {
-		t.Fatal("Esc must drop the selection first")
-	}
-	if a.model.Cursor != noSelection {
-		t.Fatalf("Esc must clear the selection, got %d", a.model.Cursor)
-	}
-}
-
-func TestArrowsStartTheSelectionAtTheTopOfTheView(t *testing.T) {
-	names := make([]string, 0, 40)
-	for i := 0; i < 40; i++ {
-		names = append(names, fmt.Sprintf("pod-%02d", i))
-	}
-	a := testApp(t, names...)
-
-	a.handleMouse(tcell.NewEventMouse(5, 12, tcell.WheelDown, tcell.ModNone))
-	a.handleMouse(tcell.NewEventMouse(5, 12, tcell.WheelDown, tcell.ModNone))
-	a.clamp()
-
-	press(a, tcell.KeyDown, 0)
-	if a.model.SelectedName() != "pod-02" {
-		t.Fatalf("the first arrow selects the top visible row, got %q", a.model.SelectedName())
-	}
-	press(a, tcell.KeyDown, 0)
-	if a.model.SelectedName() != "pod-03" {
-		t.Fatalf("the next arrow steps one row, got %q", a.model.SelectedName())
-	}
-}
-
-func TestArrowsMoveDropdownChoiceNotCursor(t *testing.T) {
+func TestArrowsMoveDropdownChoiceNotTheTable(t *testing.T) {
 	a := testApp(t, "api-1", "api-2", "api-3")
-	a.model.Cursor = 0
 
 	press(a, tcell.KeyRune, '/')
 	press(a, tcell.KeyDown, 0)
@@ -505,16 +427,16 @@ func TestArrowsMoveDropdownChoiceNotCursor(t *testing.T) {
 	if a.model.Choice != 2 {
 		t.Fatalf("choice: %d", a.model.Choice)
 	}
-	if a.model.Cursor != 0 {
-		t.Fatalf("table cursor must stay put while the dropdown is open, got %d", a.model.Cursor)
+	if a.model.Offset != 0 {
+		t.Fatalf("the table must stay put while the dropdown is open, got offset %d", a.model.Offset)
 	}
 
 	press(a, tcell.KeyEnter, 0)
 	if a.model.Focus != ui.FocusTable {
 		t.Fatal("Enter must return to the table")
 	}
-	if a.model.SelectedName() != "api-3" {
-		t.Fatalf("Enter must jump to the chosen pod, selected %q", a.model.SelectedName())
+	if a.model.Expanded != "api-3" {
+		t.Fatalf("Enter must open the actions of the chosen pod, got %q", a.model.Expanded)
 	}
 }
 
@@ -838,5 +760,227 @@ func TestEscapeClearsDimensionAndLevel(t *testing.T) {
 	}
 	if len(a.model.Rows) != 4 {
 		t.Fatalf("every pod must come back, got %d", len(a.model.Rows))
+	}
+}
+
+func TestClickOnTheNameOpensTheActions(t *testing.T) {
+	a := testApp(t, "api-1", "api-2", "web-1")
+
+	click(a, 4, 12)
+	if a.model.Expanded != "api-1" {
+		t.Fatalf("a click on the name opens its actions, got %q", a.model.Expanded)
+	}
+
+	click(a, 4, 12)
+	if a.model.Expanded != "" {
+		t.Fatalf("a second click closes them, got %q", a.model.Expanded)
+	}
+
+	click(a, 4, 12)
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Expanded != "" {
+		t.Fatalf("Esc closes them too, got %q", a.model.Expanded)
+	}
+}
+
+func TestDestructiveButtonsOnlyAsk(t *testing.T) {
+	a := testApp(t, "api-1", "web-1")
+	click(a, 4, 12)
+
+	lines := frame(t, a)
+	actions := lines[13]
+
+	restart := strings.Index(actions, "[ Restart ]") + 2
+	click(a, restart, 13)
+	if a.model.Confirm != ui.ActionRestart {
+		t.Fatalf("Restart must only ask first, got %v", a.model.Confirm)
+	}
+
+	lines = frame(t, a)
+	cancel := strings.Index(lines[13], "[ Cancel ]") + 2
+	click(a, cancel, 13)
+	if a.model.Confirm != ui.ActionNone {
+		t.Fatalf("Cancel must take the question back, got %v", a.model.Confirm)
+	}
+	if a.model.Expanded != "api-1" {
+		t.Fatalf("the actions stay open after cancelling, got %q", a.model.Expanded)
+	}
+
+	lines = frame(t, a)
+	terminate := strings.Index(lines[13], "[ Terminate ]") + 2
+	click(a, terminate, 13)
+	if a.model.Confirm != ui.ActionTerminate {
+		t.Fatalf("Terminate must only ask first, got %v", a.model.Confirm)
+	}
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Confirm != ui.ActionNone {
+		t.Fatalf("Esc must take the question back, got %v", a.model.Confirm)
+	}
+}
+
+func TestInspectOpensItsOwnScreen(t *testing.T) {
+	a := testApp(t, "api-1", "web-1")
+	click(a, 4, 12)
+
+	lines := frame(t, a)
+	inspect := strings.Index(lines[13], "[ Inspect ]") + 2
+	click(a, inspect, 13)
+
+	if a.model.Screen != ui.ScreenInspect {
+		t.Fatalf("Inspect must switch screens, got %v", a.model.Screen)
+	}
+	if a.model.Inspect.Pod != "api-1" || !a.model.Inspect.Loading {
+		t.Fatalf("the screen must open on that pod: %+v", a.model.Inspect)
+	}
+
+	select {
+	case res := <-a.inspected:
+		if res.name != "api-1" {
+			t.Fatalf("the fetch was asked for %q", res.name)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Inspect must fetch the pod")
+	}
+
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Screen != ui.ScreenTable {
+		t.Fatalf("Esc must come back to the table, got %v", a.model.Screen)
+	}
+}
+
+func TestInspectFormatSwitching(t *testing.T) {
+	a := testApp(t, "api-1")
+	a.model.Screen = ui.ScreenInspect
+	a.model.Inspect = ui.Inspection{
+		Pod:     "api-1",
+		Default: []string{"POD", "  name    api-1"},
+		Textual: []string{"Pod api-1 lives in namespace production."},
+		Yaml:    []string{"kind: Pod", "metadata:"},
+	}
+
+	press(a, tcell.KeyTab, 0)
+	if a.model.Inspect.Format != ui.FormatTextual {
+		t.Fatalf("Tab walks to textual, got %v", a.model.Inspect.Format)
+	}
+	press(a, tcell.KeyTab, 0)
+	if a.model.Inspect.Format != ui.FormatYAML {
+		t.Fatalf("then to yaml, got %v", a.model.Inspect.Format)
+	}
+	press(a, tcell.KeyTab, 0)
+	if a.model.Inspect.Format != ui.FormatDefault {
+		t.Fatalf("then back to default, got %v", a.model.Inspect.Format)
+	}
+
+	lines := frame(t, a)
+	yaml := strings.Index(lines[38], "[ yaml ]") + 2
+	click(a, yaml, 38)
+	if a.model.Inspect.Format != ui.FormatYAML {
+		t.Fatalf("the button switches too, got %v", a.model.Inspect.Format)
+	}
+
+	a.model.Inspect.Offset = 1
+	textual := strings.Index(lines[38], "[ textual ]") + 2
+	click(a, textual, 38)
+	if a.model.Inspect.Format != ui.FormatTextual || a.model.Inspect.Offset != 0 {
+		t.Fatalf("switching rewinds: %v offset %d", a.model.Inspect.Format, a.model.Inspect.Offset)
+	}
+}
+
+func TestInspectScrolls(t *testing.T) {
+	lines := make([]string, 0, 200)
+	for i := 0; i < 200; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+
+	a := testApp(t, "api-1")
+	a.model.Screen = ui.ScreenInspect
+	a.model.Inspect = ui.Inspection{Pod: "api-1", Default: lines}
+
+	press(a, tcell.KeyDown, 0)
+	press(a, tcell.KeyDown, 0)
+	if a.model.Inspect.Offset != 2 {
+		t.Fatalf("offset after two downs: %d", a.model.Inspect.Offset)
+	}
+
+	a.handleMouse(tcell.NewEventMouse(5, 10, tcell.WheelDown, tcell.ModNone))
+	if a.model.Inspect.Offset != 3 {
+		t.Fatalf("the wheel scrolls it too: %d", a.model.Inspect.Offset)
+	}
+
+	press(a, tcell.KeyHome, 0)
+	if a.model.Inspect.Offset != 0 {
+		t.Fatalf("Home rewinds: %d", a.model.Inspect.Offset)
+	}
+
+	press(a, tcell.KeyEnd, 0)
+	room := ui.InspectRoom(40)
+	if a.model.Inspect.Offset != len(lines)-room {
+		t.Fatalf("End stops at the last page: %d", a.model.Inspect.Offset)
+	}
+}
+
+func TestLogSearchTakesTypingOnTheInspectScreen(t *testing.T) {
+	a := testApp(t, "api-1")
+	a.model.Screen = ui.ScreenInspect
+	a.model.Inspect = ui.Inspection{
+		Pod:     "api-1",
+		Default: []string{"POD"},
+		Logs: []ui.LogLine{
+			{Time: "18:00:01", Text: "listening on :8000"},
+			{Time: "18:00:02", Text: "GET /health 200"},
+			{Time: "18:00:03", Text: "worker started"},
+		},
+	}
+
+	press(a, tcell.KeyRune, '/')
+	if !a.model.Inspect.LogSearch {
+		t.Fatal("slash must open the log search")
+	}
+
+	typeText(a, "health")
+	if a.model.Inspect.LogQuery != "health" {
+		t.Fatalf("query: %q", a.model.Inspect.LogQuery)
+	}
+	if got := a.model.Inspect.VisibleLogs(); len(got) != 1 {
+		t.Fatalf("the stream must be filtered, got %v", got)
+	}
+
+	press(a, tcell.KeyBackspace2, 0)
+	if a.model.Inspect.LogQuery != "healt" {
+		t.Fatalf("backspace: %q", a.model.Inspect.LogQuery)
+	}
+
+	if quit := press(a, tcell.KeyRune, 'q'); quit {
+		t.Fatal("q must type, not quit, while the search is open")
+	}
+
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Inspect.LogSearch {
+		t.Fatal("Esc must leave the search")
+	}
+	if a.model.Screen != ui.ScreenInspect {
+		t.Fatal("that Esc must not leave the screen as well")
+	}
+
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Screen != ui.ScreenTable {
+		t.Fatal("the next Esc goes back to the table")
+	}
+}
+
+func TestLogStreamIsKeptShort(t *testing.T) {
+	a := testApp(t, "api-1")
+	a.model.Screen = ui.ScreenInspect
+	a.model.Inspect = ui.Inspection{Pod: "api-1"}
+
+	for i := 0; i < 2500; i++ {
+		a.appendLog(ui.LogLine{Text: fmt.Sprintf("line %d", i)})
+	}
+
+	if len(a.model.Inspect.Logs) != 2000 {
+		t.Fatalf("the buffer must stay bounded, got %d lines", len(a.model.Inspect.Logs))
+	}
+	if last := a.model.Inspect.Logs[len(a.model.Inspect.Logs)-1]; last.Text != "line 2499" {
+		t.Errorf("the newest line must survive, got %q", last.Text)
 	}
 }

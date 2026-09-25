@@ -231,3 +231,16 @@ func TestMatchNamespaces(t *testing.T) {
 		t.Errorf("empty query keeps all: got %v", got)
 	}
 }
+
+func TestExplainPod(t *testing.T) {
+	notFound := apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, "api-1")
+	if got := ExplainPod(notFound, "production", "api-1", "https://api.example.com"); got != "pod api-1 is gone from namespace production" {
+		t.Errorf("got %q", got)
+	}
+	if got := ExplainPod(forbidden("pods"), "production", "api-1", ""); got != "no permission to read pod api-1" {
+		t.Errorf("got %q", got)
+	}
+	if got := ExplainPod(nil, "production", "api-1", ""); got != "" {
+		t.Errorf("no error, no text: %q", got)
+	}
+}

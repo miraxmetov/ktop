@@ -26,6 +26,41 @@ func ExplainPods(err error, namespace, host string) string {
 	return transportText(err, host, fmt.Sprintf("cannot list pods in namespace %s", namespace))
 }
 
+func ExplainPod(err error, namespace, name, host string) string {
+	if err == nil {
+		return ""
+	}
+	if apierrors.IsNotFound(err) {
+		return fmt.Sprintf("pod %s is gone from namespace %s", name, namespace)
+	}
+	if apierrors.IsForbidden(err) {
+		return fmt.Sprintf("no permission to read pod %s", name)
+	}
+	return transportText(err, host, fmt.Sprintf("cannot read pod %s", name))
+}
+
+func ExplainLogs(err error, pod, container string) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case apierrors.IsForbidden(err):
+		return "no permission to read the logs of " + pod
+	case apierrors.IsNotFound(err):
+		return "pod " + pod + " is gone"
+	case apierrors.IsBadRequest(err):
+		return "container " + or(container, "?") + " has no logs yet"
+	}
+	return "cannot follow the logs: " + firstLine(err.Error())
+}
+
+func or(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
 func ExplainMetrics(err error, namespace string) string {
 	if err == nil {
 		return ""

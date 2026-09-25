@@ -67,13 +67,15 @@ Without an argument ktop takes the namespace of the current kubeconfig context, 
 | `c` / `C` | change the kubeconfig, with file completion |
 | `Tab` | complete the search box with the highlighted entry |
 | `Shift+Tab` | move between the two search fields |
-| `↑` `↓` | pick from the open list, or move the cursor in the table (the first press selects the top visible row) |
+| `↑` `↓` | pick from the open list, or scroll the table |
 | `Enter` | take the highlighted entry: jump to that pod, or switch to that namespace |
-| `Esc` | leave the search field, then drop the selection, then clear the filters, then quit |
+| `Esc` | step back: the open question, the open actions, the search field, the filters, then quit |
 | `Ctrl+U` | clear the current search field |
-| `k` `j` | move the cursor |
+| `k` `j` | scroll one row |
 | `PgUp` `PgDn` | scroll a page |
-| `g` `G` / `Home` `End` | jump to the first or last pod |
+| `g` `G` / `Home` `End` | jump to the top or the bottom |
+| `Tab` (on the inspect screen) | walk through default, textual and yaml |
+| `/` (on the inspect screen) | search the log stream |
 | `r` | refresh right now, ahead of the interval |
 | `q` / `Q` / `Ctrl+C` | quit |
 
@@ -88,9 +90,15 @@ The kubeconfig in use is shown at the top right. Click it, or press `c`, to poin
 different one: the list offers what is in the directory you are typing, directories open as you
 take them, and a file switches the cluster, namespace included.
 
-The mouse works too: click a search box to open it, click an entry in the list to take it,
-click a row to select it, click anywhere else to close the list, and scroll the wheel over the
-table or the list. Nothing is selected until you click a row or press an arrow key.
+Click a pod's name and a line of actions opens right under it: `[ Inspect ]`, `[ Restart ]`,
+`[ Terminate ]`. Inspect opens the pod on a screen of its own, written out in plain words, with
+`[ readable ]` and `[ yaml ]` at the bottom to the format and `Esc` to come back. Restart and
+Terminate never fire on the first click: they turn the line into `Restart <pod>? [ Yes ] [ Cancel ]`,
+and only `Yes` deletes the pod, gracefully for Restart and immediately for Terminate.
+
+The mouse works too: click a search box to open it, click an entry in the list to take it, click
+anywhere else to close the list, and scroll the wheel over the table, the list or the inspect
+screen. Rows are never highlighted on their own; only the actions you open mark a pod.
 Opening a search shows everything ktop can see — every pod in the namespace, every namespace
 you may list — and the list narrows as you type.
 

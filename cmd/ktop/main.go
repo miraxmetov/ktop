@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -97,8 +98,6 @@ Examples:
   KUBECONFIG=~/.kube/prod.yaml ktop
 `
 
-const noSelection = -1
-
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "ktop: "+err.Error())
 
@@ -129,6 +128,24 @@ type app struct {
 	interval   time.Duration
 	pods       chan podResult
 	namespaces chan namespaceResult
+	inspected  chan inspectResult
+	logs       chan logLine
+	stopLogs   context.CancelFunc
+}
+
+type inspectResult struct {
+	name      string
+	container string
+	readable  []string
+	textual   []string
+	yaml      []string
+	err       error
+}
+
+type logLine struct {
+	pod  string
+	line string
+	err  error
 }
 
 func main() {
@@ -163,12 +180,13 @@ func main() {
 		interval:   opts.interval,
 		pods:       make(chan podResult, 1),
 		namespaces: make(chan namespaceResult, 1),
+		inspected:  make(chan inspectResult, 1),
+		logs:       make(chan logLine, 256),
 		model: &ui.Model{
 			Namespace:  namespace,
 			Context:    client.Context,
 			Kubeconfig: client.Kubeconfig,
 			Started:    time.Now(),
-			Cursor:     noSelection,
 		},
 	}
 
@@ -240,6 +258,7 @@ func (a *app) run() {
 			if res.namespace != a.namespace {
 				continue
 			}
+			a.model.Loaded = true
 			if res.err != nil {
 				a.model.Err = res.err.Error()
 				a.model.All = nil
@@ -249,6 +268,33 @@ func (a *app) run() {
 				a.model.All = res.result.Rows
 			}
 			a.reselect()
+			a.draw()
+		case res := <-a.inspected:
+			if res.name != a.model.Inspect.Pod {
+				continue
+			}
+			a.model.Inspect.Loading = false
+			if res.err != nil {
+				a.model.Inspect.Err = res.err.Error()
+			} else {
+				a.model.Inspect.Err = ""
+				a.model.Inspect.Default = res.readable
+				a.model.Inspect.Textual = res.textual
+				a.model.Inspect.Yaml = res.yaml
+				a.model.Inspect.Container = res.container
+				a.followLogs(res.name, res.container)
+			}
+			a.draw()
+		case line := <-a.logs:
+			if line.pod != a.model.Inspect.Pod || a.model.Screen != ui.ScreenInspect {
+				continue
+			}
+			if line.err != nil {
+				a.model.Inspect.LogErr = line.err.Error()
+			} else {
+				stamp, text := kube.SplitLogLine(line.line)
+				a.appendLog(ui.LogLine{Time: stamp, Text: text})
+			}
 			a.draw()
 		case res := <-a.namespaces:
 			if res.err != nil {
@@ -285,18 +331,7 @@ func (a *app) run() {
 }
 
 func (a *app) reselect() {
-	previous := a.model.SelectedName()
 	ui.ApplyFilter(a.model)
-	if previous != "" {
-		for i, row := range a.model.Rows {
-			if row.Name == previous {
-				a.model.Cursor = i
-				a.clamp()
-				return
-			}
-		}
-		a.model.Cursor = noSelection
-	}
 	a.clamp()
 }
 
@@ -316,8 +351,10 @@ func (a *app) switchNamespace(name string) {
 	a.model.Rows = nil
 	a.model.Err = ""
 	a.model.Note = ""
-	a.model.Cursor = noSelection
+	a.model.Expanded = ""
+	a.model.Confirm = ui.ActionNone
 	a.model.Offset = 0
+	a.model.Loaded = false
 	a.fetchPods()
 }
 
@@ -406,8 +443,10 @@ func (a *app) applyKubeconfig(path string) {
 	a.model.Rows = nil
 	a.model.Err = ""
 	a.model.Note = ""
-	a.model.Cursor = noSelection
+	a.model.Expanded = ""
+	a.model.Confirm = ui.ActionNone
 	a.model.Offset = 0
+	a.model.Loaded = false
 	a.model.Choice = 0
 	a.model.Focus = ui.FocusTable
 	a.fetchPods()
@@ -450,7 +489,8 @@ func (a *app) applyChoice() {
 	if choice >= 0 && choice < len(options) {
 		for i, row := range a.model.Rows {
 			if row.Name == options[choice] {
-				a.model.Cursor = i
+				a.model.Expanded = row.Name
+				a.scrollTo(i)
 				break
 			}
 		}
@@ -493,6 +533,29 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 	x, y := e.Position()
 	width, height := a.screen.Size()
 
+	if a.model.Screen == ui.ScreenInspect {
+		switch {
+		case e.Buttons()&tcell.Button1 != 0:
+			switch ui.HitInspect(width, height, x, y) {
+			case ui.HitFormatDefault:
+				a.setFormat(ui.FormatDefault)
+			case ui.HitFormatTextual:
+				a.setFormat(ui.FormatTextual)
+			case ui.HitFormatYAML:
+				a.setFormat(ui.FormatYAML)
+			case ui.HitLogSearch:
+				a.model.Inspect.LogSearch = true
+			case ui.HitConfigPane, ui.HitLogPane:
+				a.model.Inspect.LogSearch = false
+			}
+		case e.Buttons()&tcell.WheelUp != 0:
+			a.scroll(-1)
+		case e.Buttons()&tcell.WheelDown != 0:
+			a.scroll(1)
+		}
+		return
+	}
+
 	switch {
 	case e.Buttons()&tcell.Button1 != 0:
 		target, index := ui.Hit(*a.model, width, height, x, y)
@@ -516,9 +579,20 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 		case ui.HitDropdown:
 			a.model.Choice = index
 			a.applyChoice()
+		case ui.HitPodName:
+			a.toggleActions(index)
+		case ui.HitActionInspect:
+			a.openInspect(index)
+		case ui.HitActionRestart:
+			a.model.Confirm = ui.ActionRestart
+		case ui.HitActionTerminate:
+			a.model.Confirm = ui.ActionTerminate
+		case ui.HitConfirmYes:
+			a.runAction()
+		case ui.HitConfirmCancel:
+			a.model.Confirm = ui.ActionNone
 		case ui.HitRow:
 			a.model.Focus = ui.FocusTable
-			a.model.Cursor = index
 		case ui.HitNone:
 			a.model.Focus = ui.FocusTable
 		}
@@ -539,6 +613,9 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 }
 
 func (a *app) handleKey(e *tcell.EventKey) bool {
+	if a.model.Screen == ui.ScreenInspect {
+		return a.handleInspectKey(e)
+	}
 	if a.model.Focus != ui.FocusTable {
 		return a.handleInputKey(e)
 	}
@@ -550,8 +627,12 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 	case tcell.KeyCtrlC:
 		return true
 	case tcell.KeyEscape:
-		if a.model.Cursor >= 0 {
-			a.model.Cursor = noSelection
+		if a.model.Confirm != ui.ActionNone {
+			a.model.Confirm = ui.ActionNone
+			return false
+		}
+		if a.model.Expanded != "" {
+			a.model.Expanded = ""
 			return false
 		}
 		if a.model.PodQuery != "" {
@@ -567,13 +648,13 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 		}
 		return true
 	case tcell.KeyUp:
-		a.moveCursor(-1)
+		a.scroll(-1)
 	case tcell.KeyDown:
-		a.moveCursor(1)
+		a.scroll(1)
 	case tcell.KeyPgUp:
-		a.page(-page)
+		a.scroll(-page)
 	case tcell.KeyPgDn:
-		a.page(page)
+		a.scroll(page)
 	case tcell.KeyHome:
 		a.jump(0)
 	case tcell.KeyEnd:
@@ -587,9 +668,9 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 		case 'q', 'Q':
 			return true
 		case 'k':
-			a.moveCursor(-1)
+			a.scroll(-1)
 		case 'j':
-			a.moveCursor(1)
+			a.scroll(1)
 		case 'g':
 			a.jump(0)
 		case 'G':
@@ -606,6 +687,88 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 		}
 	}
 	return false
+}
+
+func (a *app) handleInspectKey(e *tcell.EventKey) bool {
+	_, height := a.screen.Size()
+
+	if a.model.Inspect.LogSearch {
+		switch e.Key() {
+		case tcell.KeyCtrlC:
+			return true
+		case tcell.KeyEscape, tcell.KeyEnter:
+			a.model.Inspect.LogSearch = false
+		case tcell.KeyBackspace, tcell.KeyBackspace2, tcell.KeyDelete:
+			a.model.Inspect.LogQuery = trimLast(a.model.Inspect.LogQuery)
+		case tcell.KeyCtrlU:
+			a.model.Inspect.LogQuery = ""
+		case tcell.KeyRune:
+			a.model.Inspect.LogQuery += string(e.Rune())
+		}
+		return false
+	}
+
+	switch e.Key() {
+	case tcell.KeyCtrlC:
+		return true
+	case tcell.KeyEscape:
+		a.closeInspect()
+	case tcell.KeyUp:
+		a.scroll(-1)
+	case tcell.KeyDown:
+		a.scroll(1)
+	case tcell.KeyPgUp:
+		a.scroll(-ui.InspectRoom(height))
+	case tcell.KeyPgDn:
+		a.scroll(ui.InspectRoom(height))
+	case tcell.KeyHome:
+		a.jump(0)
+	case tcell.KeyEnd:
+		a.jump(len(a.model.Inspect.Lines()))
+	case tcell.KeyTab, tcell.KeyBacktab:
+		a.toggleFormat()
+	case tcell.KeyRune:
+		switch e.Rune() {
+		case 'q', 'Q':
+			a.closeInspect()
+		case 'k':
+			a.scroll(-1)
+		case 'j':
+			a.scroll(1)
+		case 'g':
+			a.jump(0)
+		case 'G':
+			a.jump(len(a.model.Inspect.Lines()))
+		case 'y', 'Y':
+			a.setFormat(ui.FormatYAML)
+		case 'd', 'D':
+			a.setFormat(ui.FormatDefault)
+		case 't', 'T':
+			a.setFormat(ui.FormatTextual)
+		case '/':
+			a.model.Inspect.LogSearch = true
+		}
+	}
+	return false
+}
+
+func (a *app) toggleFormat() {
+	switch a.model.Inspect.Format {
+	case ui.FormatDefault:
+		a.setFormat(ui.FormatTextual)
+	case ui.FormatTextual:
+		a.setFormat(ui.FormatYAML)
+	default:
+		a.setFormat(ui.FormatDefault)
+	}
+}
+
+func (a *app) setFormat(format ui.Format) {
+	if a.model.Inspect.Format == format {
+		return
+	}
+	a.model.Inspect.Format = format
+	a.model.Inspect.Offset = 0
 }
 
 func (a *app) handleInputKey(e *tcell.EventKey) bool {
@@ -688,52 +851,201 @@ func trimLast(text string) string {
 	return string(runes[:len(runes)-1])
 }
 
-func (a *app) moveCursor(delta int) {
-	if a.model.Cursor < 0 {
-		a.model.Cursor = a.model.Offset
+func (a *app) scroll(delta int) {
+	if a.model.Screen == ui.ScreenInspect {
+		a.model.Inspect.Offset += delta
+		a.clampInspect()
 		return
 	}
-	a.model.Cursor += delta
-}
-
-func (a *app) page(delta int) {
-	if a.model.Cursor >= 0 {
-		a.model.Cursor += delta
-		return
-	}
-	a.scroll(delta)
+	a.model.Offset += delta
 }
 
 func (a *app) jump(index int) {
-	if a.model.Cursor >= 0 {
-		a.model.Cursor = index
+	if a.model.Screen == ui.ScreenInspect {
+		a.model.Inspect.Offset = index
+		a.clampInspect()
 		return
 	}
 	a.model.Offset = index
 }
 
-func (a *app) scroll(delta int) {
-	a.model.Offset += delta
+func (a *app) clampInspect() {
+	_, height := a.screen.Size()
+	room := ui.InspectRoom(height)
+	lines := len(a.model.Inspect.Lines())
+
+	if a.model.Inspect.Offset > lines-room {
+		a.model.Inspect.Offset = lines - room
+	}
+	if a.model.Inspect.Offset < 0 {
+		a.model.Inspect.Offset = 0
+	}
+}
+
+func (a *app) toggleActions(index int) {
+	if index < 0 || index >= len(a.model.Rows) {
+		return
+	}
+	name := a.model.Rows[index].Name
+
+	a.model.Focus = ui.FocusTable
+	a.model.Confirm = ui.ActionNone
+	if a.model.Expanded == name {
+		a.model.Expanded = ""
+		return
+	}
+	a.model.Expanded = name
+}
+
+func (a *app) openInspect(index int) {
+	if index < 0 || index >= len(a.model.Rows) {
+		return
+	}
+	name := a.model.Rows[index].Name
+
+	a.stopStream()
+	a.model.Screen = ui.ScreenInspect
+	a.model.Inspect = ui.Inspection{Pod: name, Loading: true, Format: a.model.Inspect.Format}
+	a.fetchPod(name)
+}
+
+func (a *app) appendLog(line ui.LogLine) {
+	const keep = 2000
+	a.model.Inspect.Logs = append(a.model.Inspect.Logs, line)
+	if len(a.model.Inspect.Logs) > keep {
+		a.model.Inspect.Logs = a.model.Inspect.Logs[len(a.model.Inspect.Logs)-keep:]
+	}
+}
+
+func (a *app) stopStream() {
+	if a.stopLogs != nil {
+		a.stopLogs()
+		a.stopLogs = nil
+	}
+}
+
+func (a *app) followLogs(name, container string) {
+	a.stopStream()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.stopLogs = cancel
+	namespace := a.namespace
+
+	go func() {
+		stream, err := a.client.FollowLogs(ctx, namespace, name, container, 200)
+		if err != nil {
+			select {
+			case a.logs <- logLine{pod: name, err: err}:
+			case <-ctx.Done():
+			}
+			return
+		}
+		defer stream.Close()
+
+		reader := bufio.NewReader(stream)
+		for {
+			text, err := reader.ReadString('\n')
+			if text != "" {
+				select {
+				case a.logs <- logLine{pod: name, line: strings.TrimRight(text, "\r\n")}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+}
+
+func (a *app) closeInspect() {
+	a.stopStream()
+	a.model.Screen = ui.ScreenTable
+	a.model.Inspect.Loading = false
+	a.model.Inspect.LogSearch = false
+}
+
+func (a *app) fetchPod(name string) {
+	namespace := a.namespace
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		pod, err := a.client.Pod(ctx, namespace, name)
+		if err != nil {
+			a.inspected <- inspectResult{name: name, err: err}
+			return
+		}
+		body, err := kube.YAML(pod)
+		if err != nil {
+			a.inspected <- inspectResult{name: name, err: err}
+			return
+		}
+		now := time.Now()
+		a.inspected <- inspectResult{
+			name:      name,
+			container: kube.FirstContainer(pod),
+			readable:  kube.Describe(pod, now),
+			textual:   kube.Textual(pod, now),
+			yaml:      body,
+		}
+	}()
+}
+
+func (a *app) runAction() {
+	action := a.model.Confirm
+	name := a.model.ExpandedName()
+	a.model.Confirm = ui.ActionNone
+	if name == "" || action == ui.ActionNone {
+		return
+	}
+
+	namespace := a.namespace
+	force := action == ui.ActionTerminate
+	verb := "restarting"
+	if force {
+		verb = "terminating"
+	}
+	a.model.Note = verb + " " + name
+	a.model.Expanded = ""
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := a.client.DeletePod(ctx, namespace, name, force); err != nil {
+			a.pods <- podResult{namespace: namespace, err: err}
+			return
+		}
+		a.pods <- podResult{namespace: namespace, result: kube.Result{}, err: nil}
+	}()
+}
+
+func (a *app) scrollTo(index int) {
+	_, height := a.screen.Size()
+	room := ui.Visible(height)
+
+	if index < a.model.Offset {
+		a.model.Offset = index
+	}
+	if index >= a.model.Offset+room {
+		a.model.Offset = index - room + 1
+	}
 }
 
 func (a *app) clamp() {
+	if a.model.Screen == ui.ScreenInspect {
+		a.clampInspect()
+		return
+	}
+
 	_, height := a.screen.Size()
 	room := ui.Visible(height)
 	model := a.model
 
-	if model.Cursor > len(model.Rows)-1 {
-		model.Cursor = len(model.Rows) - 1
-	}
-	if model.Cursor < noSelection {
-		model.Cursor = noSelection
-	}
-	if model.Cursor >= 0 {
-		if model.Cursor < model.Offset {
-			model.Offset = model.Cursor
-		}
-		if model.Cursor >= model.Offset+room {
-			model.Offset = model.Cursor - room + 1
-		}
+	if model.ExpandedIndex() < 0 {
+		model.Expanded = ""
+		model.Confirm = ui.ActionNone
 	}
 	if model.Offset > len(model.Rows)-room {
 		model.Offset = len(model.Rows) - room

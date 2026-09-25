@@ -391,7 +391,7 @@ func TestClickFocusesSearchFields(t *testing.T) {
 	}
 
 	press(a, tcell.KeyEscape, 0)
-	click(a, 3, 7)
+	click(a, 3, 8)
 	if a.model.Focus != ui.FocusPods {
 		t.Fatalf("click on the pod box: focus %v", a.model.Focus)
 	}
@@ -415,7 +415,7 @@ func TestClickOnDropdownSwitchesNamespace(t *testing.T) {
 func TestClickOnRowMovesCursor(t *testing.T) {
 	a := testApp(t, "api-1", "api-2", "web-1", "cache-1")
 
-	click(a, 4, 11+2)
+	click(a, 4, 12+2)
 	if a.model.Cursor != 2 {
 		t.Fatalf("cursor after the click: %d", a.model.Cursor)
 	}
@@ -460,7 +460,7 @@ func TestNothingIsSelectedUntilYouAskForIt(t *testing.T) {
 		t.Fatalf("a fresh table must have no selection, got %d", a.model.Cursor)
 	}
 
-	click(a, 4, 11)
+	click(a, 4, 12)
 	if a.model.Cursor != 0 || a.model.SelectedName() != "api-1" {
 		t.Fatalf("a click must select that row, got %d %q", a.model.Cursor, a.model.SelectedName())
 	}

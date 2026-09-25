@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -98,6 +99,16 @@ Examples:
 
 const noSelection = -1
 
+func fail(err error) {
+	fmt.Fprintln(os.Stderr, "ktop: "+err.Error())
+
+	var config *kube.ConfigError
+	if errors.As(err, &config) && config.Hint != "" {
+		fmt.Fprintln(os.Stderr, "hint: "+config.Hint)
+	}
+	os.Exit(1)
+}
+
 type podResult struct {
 	namespace string
 	result    kube.Result
@@ -129,8 +140,7 @@ func main() {
 
 	client, defaultNamespace, err := kube.New(opts.context)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ktop: "+err.Error())
-		os.Exit(1)
+		fail(err)
 	}
 	namespace := resolveNamespace(opts.namespace, defaultNamespace)
 
@@ -376,6 +386,10 @@ func (a *app) applyKubeconfig(path string) {
 	client, namespace, err := kube.NewWithPath(path, a.context)
 	if err != nil {
 		a.model.Err = err.Error()
+		var config *kube.ConfigError
+		if errors.As(err, &config) && config.Hint != "" {
+			a.model.Err += ", " + config.Hint
+		}
 		return
 	}
 

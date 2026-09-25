@@ -19,12 +19,12 @@ const (
 	nsBoxTop     = 2
 	lineNs       = 3
 	lineStatus   = 5
-	podBoxTop    = 6
-	linePods     = 7
-	lineHeader   = 9
-	lineRule     = 10
-	rowTop       = 11
-	overhead     = 13
+	podBoxTop    = 7
+	linePods     = 8
+	lineHeader   = 10
+	lineRule     = 11
+	rowTop       = 12
+	overhead     = 14
 	kubeInnerMin = 30
 	dropMax      = 8
 )
@@ -68,7 +68,6 @@ var (
 	styleWarn     = tcell.StyleDefault.Foreground(warnColor)
 	styleBad      = tcell.StyleDefault.Foreground(tcell.ColorRed).Bold(true)
 	styleAccent   = tcell.StyleDefault.Foreground(tcell.ColorTeal)
-	styleTitle    = tcell.StyleDefault.Foreground(tcell.ColorWhite).Bold(true)
 	styleInput    = tcell.StyleDefault.Foreground(tcell.ColorWhite)
 	stylePlace    = tcell.StyleDefault.Foreground(tcell.ColorGray).Italic(true)
 	styleFocused  = tcell.StyleDefault.Foreground(tcell.ColorTeal).Bold(true)
@@ -437,11 +436,14 @@ func geom(m Model, width, height int) geometry {
 	g := geometry{cols: cols, widths: widths, total: total, room: Visible(height)}
 
 	nsInner := boxWidthFor(total, 6, 21, 30)
-	podInner := boxWidthFor(total, 3, 26, 60)
+	podBoxWidth := widths[0]
+	if podBoxWidth < 26 {
+		podBoxWidth = 26
+	}
 	g.nsBox = rect{x: 0, y: nsBoxTop, w: nsInner + 4, h: 3}
-	g.podBox = rect{x: 0, y: podBoxTop, w: podInner + 4, h: 3}
+	g.podBox = rect{x: 0, y: podBoxTop, w: podBoxWidth, h: 3}
 	g.nsInput = rect{x: 2, y: lineNs, w: nsInner, h: 1}
-	g.podInput = rect{x: 2, y: linePods, w: podInner, h: 1}
+	g.podInput = rect{x: 2, y: linePods, w: podBoxWidth - 4, h: 1}
 
 	kubeWidth := len([]rune(ShortPath(m.Kubeconfig)))
 	if m.Focus == FocusKubeconfig {
@@ -759,7 +761,7 @@ func Draw(s tcell.Screen, m Model) {
 	puts(s, x, lineClock, 0, false, uptime, styleDim)
 
 	x = puts(s, 0, lineTitle, 0, false, "Using ", styleDim)
-	x += puts(s, x, lineTitle, 0, false, m.Namespace, styleTitle)
+	x += puts(s, x, lineTitle, 0, false, m.Namespace, styleAccent.Bold(true))
 	puts(s, x, lineTitle, 0, false, " namespace", styleDim)
 
 	if m.Focus == FocusKubeconfig {

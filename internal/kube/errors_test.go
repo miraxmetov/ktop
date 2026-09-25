@@ -82,19 +82,64 @@ func TestExplainMetrics(t *testing.T) {
 func TestExplainConfig(t *testing.T) {
 	cases := []struct {
 		err  error
-		want string
+		want ConfigError
 	}{
-		{errors.New("invalid configuration: no configuration has been provided, try setting KUBERNETES_MASTER environment variable"),
-			"no kubeconfig found, set KUBECONFIG or create ~/.kube/config"},
-		{errors.New(`stat /home/u/.kube/config: no such file or directory`),
-			"no kubeconfig found, set KUBECONFIG or create ~/.kube/config"},
-		{errors.New(`context "staging" was not found`), "kube context not found in your kubeconfig"},
-		{errors.New(`context "staging" does not exist`), "kube context not found in your kubeconfig"},
+		{
+			errors.New("invalid configuration: no configuration has been provided, try setting KUBERNETES_MASTER environment variable"),
+			ConfigError{
+				Message: "no kubeconfig found",
+				Hint:    "set KUBECONFIG variable or create one at ~/.kube/config",
+			},
+		},
+		{
+			errors.New(`stat /home/u/.kube/config: no such file or directory`),
+			ConfigError{
+				Message: "no kubeconfig found",
+				Hint:    "set KUBECONFIG variable or create one at ~/.kube/config",
+			},
+		},
+		{
+			errors.New(`context "staging" was not found`),
+			ConfigError{
+				Message: "kube context not found in your kubeconfig",
+				Hint:    "run kubectl config get-contexts to list the ones you have",
+			},
+		},
+		{
+			errors.New("yaml: line 4: mapping values are not allowed in this context"),
+			ConfigError{Message: "kubeconfig: yaml: line 4: mapping values are not allowed in this context"},
+		},
 	}
 	for _, c := range cases {
-		if got := ExplainConfig(c.err); got != c.want {
-			t.Errorf("ExplainConfig(%v) = %q, want %q", c.err, got, c.want)
+		got := ExplainConfig(c.err)
+		if got.Message != c.want.Message || got.Hint != c.want.Hint {
+			t.Errorf("ExplainConfig(%v) = %q / %q, want %q / %q",
+				c.err, got.Message, got.Hint, c.want.Message, c.want.Hint)
 		}
+		if got.Error() != c.want.Message {
+			t.Errorf("the hint must stay out of Error(): %q", got.Error())
+		}
+	}
+
+	if ExplainConfig(nil) != nil {
+		t.Error("no error, no explanation")
+	}
+}
+
+func TestNewWithPathReportsAMissingFile(t *testing.T) {
+	_, _, err := NewWithPath("/definitely/not/a/kubeconfig.yaml", "")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	var config *ConfigError
+	if !errors.As(err, &config) {
+		t.Fatalf("want a ConfigError, got %T", err)
+	}
+	if config.Message != "cannot read /definitely/not/a/kubeconfig.yaml" {
+		t.Errorf("message: %q", config.Message)
+	}
+	if config.Hint == "" {
+		t.Error("a bad path deserves a hint")
 	}
 }
 

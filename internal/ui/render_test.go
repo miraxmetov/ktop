@@ -98,8 +98,8 @@ func TestDrawHeaderShowsNamespaceAndSearchBars(t *testing.T) {
 			t.Errorf("line %d must be the bottom of a frame: %q", y, lines[y])
 		}
 	}
-	if len(lines[lineNs])*3 > len(lines[linePods])*2 {
-		t.Errorf("the namespace frame must be clearly narrower: %d vs %d",
+	if len(lines[lineNs]) >= len(lines[linePods]) {
+		t.Errorf("the namespace frame must be the narrower one: %d vs %d",
 			len(lines[lineNs]), len(lines[linePods]))
 	}
 }
@@ -1247,5 +1247,60 @@ func TestScrollingWithoutASelectionStillShowsRows(t *testing.T) {
 	lines, _ := draw(t, 170, 30, m)
 	if !strings.Contains(lines[rowTop], "pod-05") {
 		t.Errorf("the view must follow the offset: %q", lines[rowTop])
+	}
+}
+
+func TestPodFrameMatchesThePodColumn(t *testing.T) {
+	for _, width := range []int{110, 160, 210, 260} {
+		m := model(sample(3))
+		lines, _ := draw(t, width, 30, m)
+
+		frame := len([]rune(lines[podBoxTop]))
+		column := strings.Index(lines[lineHeader], "STATUS") - gap
+		if frame != column {
+			t.Errorf("width %d: the frame is %d wide, the POD column is %d", width, frame, column)
+		}
+	}
+}
+
+func TestBlankLineBetweenStatusAndPodFrame(t *testing.T) {
+	lines, _ := draw(t, 170, 30, model(sample(3)))
+
+	if strings.TrimSpace(lines[lineStatus]) == "" {
+		t.Fatalf("the counters must stay on their line: %q", lines[lineStatus])
+	}
+	if strings.TrimSpace(lines[lineStatus+1]) != "" {
+		t.Errorf("a blank line must separate them from the pod frame: %q", lines[lineStatus+1])
+	}
+	if !strings.HasPrefix(lines[podBoxTop], "\u250c") {
+		t.Errorf("the frame must follow the blank line: %q", lines[podBoxTop])
+	}
+}
+
+func TestNamespaceUsesTheClockColour(t *testing.T) {
+	m := model(sample(2))
+	m.Now = time.Date(2026, 9, 24, 10, 30, 0, 0, time.Local)
+
+	lines, screen := draw(t, 170, 30, m)
+	cells, w, _ := screen.GetContents()
+
+	clockColumn := strings.Index(lines[lineClock], "10:30:00")
+	nameColumn := strings.Index(lines[lineTitle], "production")
+	if clockColumn < 0 || nameColumn < 0 {
+		t.Fatalf("clock %q, title %q", lines[lineClock], lines[lineTitle])
+	}
+
+	clockFg, _, _ := cells[lineClock*w+clockColumn].Style.Decompose()
+	nameFg, _, attrs := cells[lineTitle*w+nameColumn].Style.Decompose()
+	if nameFg != clockFg {
+		t.Errorf("the namespace must share the clock colour: %v vs %v", nameFg, clockFg)
+	}
+	if attrs&tcell.AttrBold == 0 {
+		t.Error("the namespace stays bold")
+	}
+
+	labelFg, _, _ := cells[lineTitle*w].Style.Decompose()
+	if labelFg == nameFg {
+		t.Error("the words around it stay dim")
 	}
 }

@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	metricsapi "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 )
 
 func crashing(name string, uid types.UID, restarts int32, reason string) *corev1.Pod {
@@ -115,5 +117,90 @@ func TestCountersKeepNamespacesApart(t *testing.T) {
 	if row := poll(t, client)["api"]; row.NewRestarts != 1 || row.Restarts != 2 {
 		t.Fatalf("watching another namespace must not reset the baseline: total %d, session %d",
 			row.Restarts, row.NewRestarts)
+	}
+}
+
+func sidecarPod(name string, appLimits, sidecarLimits corev1.ResourceList) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "production"},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{
+			{Name: "app", Resources: corev1.ResourceRequirements{Limits: appLimits}},
+			{Name: "vault-agent", Resources: corev1.ResourceRequirements{Limits: sidecarLimits}},
+		}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "app", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+			{Name: "vault-agent", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+		}},
+	}
+}
+
+func twoContainerMetrics(name, appCPU, appMem, sidecarCPU, sidecarMem string) metricsapi.PodMetrics {
+	return metricsapi.PodMetrics{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "production"},
+		Containers: []metricsapi.ContainerMetrics{
+			{Name: "app", Usage: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse(appCPU), corev1.ResourceMemory: resource.MustParse(appMem)}},
+			{Name: "vault-agent", Usage: corev1.ResourceList{
+				corev1.ResourceCPU: resource.MustParse(sidecarCPU), corev1.ResourceMemory: resource.MustParse(sidecarMem)}},
+		},
+	}
+}
+
+func TestPartialLimitsGiveNoPercentage(t *testing.T) {
+	pods := k8sfake.NewSimpleClientset(
+		sidecarPod("unlimited-app", nil, limited("50m", "64Mi")),
+	)
+	metrics := metricsClient(twoContainerMetrics("unlimited-app", "1m", "128296Ki", "1m", "28912Ki"))
+
+	client := NewWithClients(pods, metrics)
+	row := poll(t, client)["unlimited-app"]
+
+	if row.CPUPct != -1 || row.MemPct != -1 {
+		t.Fatalf("a sidecar limit says nothing about the pod: cpu %.1f%%, mem %.1f%%", row.CPUPct, row.MemPct)
+	}
+	if row.Worst != -1 {
+		t.Errorf("such a pod must stay out of the counters, got worst %.1f", row.Worst)
+	}
+	if !row.HasCPU || !row.HasMem {
+		t.Error("usage itself must still be shown")
+	}
+	if row.CPULimit != 0 || row.MemLimit != 0 {
+		t.Errorf("an incomplete limit must not be reported: %.0f / %.0f", row.CPULimit, row.MemLimit)
+	}
+}
+
+func TestLimitsOnEveryContainerAreSummed(t *testing.T) {
+	pods := k8sfake.NewSimpleClientset(
+		sidecarPod("limited-app", limited("200m", "256Mi"), limited("50m", "64Mi")),
+	)
+	metrics := metricsClient(twoContainerMetrics("limited-app", "100m", "128Mi", "25m", "32Mi"))
+
+	client := NewWithClients(pods, metrics)
+	row := poll(t, client)["limited-app"]
+
+	if row.CPULimit != 250 || row.MemLimit != 320 {
+		t.Fatalf("limits: %.0fm cpu, %.0fMi memory", row.CPULimit, row.MemLimit)
+	}
+	if row.CPUPct < 49.9 || row.CPUPct > 50.1 {
+		t.Errorf("cpu%%: %.2f", row.CPUPct)
+	}
+	if row.MemPct < 49.9 || row.MemPct > 50.1 {
+		t.Errorf("mem%%: %.2f", row.MemPct)
+	}
+}
+
+func TestOneSidedLimitsAreIndependent(t *testing.T) {
+	cpuOnly := corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}
+	pods := k8sfake.NewSimpleClientset(sidecarPod("cpu-only", cpuOnly, cpuOnly))
+	metrics := metricsClient(twoContainerMetrics("cpu-only", "25m", "64Mi", "25m", "64Mi"))
+
+	client := NewWithClients(pods, metrics)
+	row := poll(t, client)["cpu-only"]
+
+	if row.CPUPct < 24.9 || row.CPUPct > 25.1 {
+		t.Errorf("cpu is limited everywhere, so it has a percentage: %.2f", row.CPUPct)
+	}
+	if row.MemPct != -1 {
+		t.Errorf("memory has no limit anywhere, so it has none: %.2f", row.MemPct)
 	}
 }

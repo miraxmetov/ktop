@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -81,6 +82,12 @@ func New(contextName string) (*Client, string, error) {
 func NewWithPath(path, contextName string) (*Client, string, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if path != "" {
+		if _, err := os.Stat(path); err != nil {
+			return nil, "default", &ConfigError{
+				Message: "cannot read " + path,
+				Hint:    "check the path, or pick another file from the list",
+			}
+		}
 		rules.ExplicitPath = path
 	}
 	overrides := &clientcmd.ConfigOverrides{}
@@ -96,7 +103,7 @@ func NewWithPath(path, contextName string) (*Client, string, error) {
 
 	cfg, err := cc.ClientConfig()
 	if err != nil {
-		return nil, namespace, errors.New(ExplainConfig(err))
+		return nil, namespace, ExplainConfig(err)
 	}
 	cfg.UserAgent = "ktop"
 	if cfg.Timeout == 0 {
@@ -105,11 +112,11 @@ func NewWithPath(path, contextName string) (*Client, string, error) {
 
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, namespace, errors.New(ExplainConfig(err))
+		return nil, namespace, ExplainConfig(err)
 	}
 	ms, err := metricsv.NewForConfig(cfg)
 	if err != nil {
-		return nil, namespace, errors.New(ExplainConfig(err))
+		return nil, namespace, ExplainConfig(err)
 	}
 
 	client := &Client{
@@ -304,14 +311,25 @@ func buildRow(pod *corev1.Pod, used map[string]usage, seen podCounter) Row {
 	row := Row{Name: pod.Name, CPUPct: -1, MemPct: -1, Worst: -1}
 	row.Status, row.Severity = podStatus(pod)
 
+	cpuLimited, memLimited := len(pod.Spec.Containers) > 0, len(pod.Spec.Containers) > 0
 	for i := range pod.Spec.Containers {
 		limits := pod.Spec.Containers[i].Resources.Limits
 		if cpu, ok := limits[corev1.ResourceCPU]; ok {
 			row.CPULimit += float64(cpu.MilliValue())
+		} else {
+			cpuLimited = false
 		}
 		if mem, ok := limits[corev1.ResourceMemory]; ok {
 			row.MemLimit += float64(mem.Value()) / (1024 * 1024)
+		} else {
+			memLimited = false
 		}
+	}
+	if !cpuLimited {
+		row.CPULimit = 0
+	}
+	if !memLimited {
+		row.MemLimit = 0
 	}
 
 	row.NewRestarts = seen.restarts

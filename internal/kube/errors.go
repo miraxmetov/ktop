@@ -51,20 +51,35 @@ func ExplainNamespaces(err error) string {
 	return "cannot list namespaces, type a name and press Enter"
 }
 
-func ExplainConfig(err error) string {
+type ConfigError struct {
+	Message string
+	Hint    string
+}
+
+func (e *ConfigError) Error() string {
+	return e.Message
+}
+
+func ExplainConfig(err error) *ConfigError {
 	if err == nil {
-		return ""
+		return nil
 	}
 	text := err.Error()
 	switch {
 	case strings.Contains(text, "no configuration has been provided"),
 		strings.Contains(text, "no such file or directory"):
-		return "no kubeconfig found, set KUBECONFIG or create ~/.kube/config"
+		return &ConfigError{
+			Message: "no kubeconfig found",
+			Hint:    "set KUBECONFIG variable or create one at ~/.kube/config",
+		}
 	case strings.Contains(text, "context") &&
 		(strings.Contains(text, "was not found") || strings.Contains(text, "does not exist")):
-		return "kube context not found in your kubeconfig"
+		return &ConfigError{
+			Message: "kube context not found in your kubeconfig",
+			Hint:    "run kubectl config get-contexts to list the ones you have",
+		}
 	}
-	return "kubeconfig: " + firstLine(text)
+	return &ConfigError{Message: "kubeconfig: " + firstLine(text)}
 }
 
 func transportText(err error, host, fallback string) string {

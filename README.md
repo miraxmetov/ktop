@@ -123,7 +123,7 @@ it rests for a moment, walks to its end a character at a time, rests again and w
 
 ## Finding what is wrong
 
-The status line is a filter. `N critical / N warning` counts the pods behind each number, and
+The status line is a filter. `N critical / N warnings` counts the pods behind each number, and
 `issues regarding status / cpu / memory` decides what those words mean: pick `cpu` and the
 counters describe CPU against limits alone, pick `status` and they count crashing and not-ready
 pods. Click a number to keep only those pods, click the chosen word again to let the rest back in.
@@ -136,14 +136,19 @@ comes back under a new name appears or disappears on its own. Press `n` to searc
 directories open as you take them, and a file switches the cluster, namespace included. Opening
 any search shows everything ktop can see and narrows the list as you type.
 
-## Acting on a pod
+## Acting on a pod or a workload
 
-Click a pod's name and three actions open under it, stacked inside the `POD` column and pushing
-the rest of the table down: `[ Inspect ]`, `[ Restart ]`, `[ Terminate ]`.
+Click a name and three actions open under it, stacked inside the first column and pushing the rest
+of the table down: `[ Inspect ]`, `[ Restart ]`, `[ Terminate ]`.
 
-Restart and Terminate never fire on the first click. The three lines become `Restart the pod?`,
-`[ Yes ]` and `[ Cancel ]`, and only `Yes` deletes the pod: gracefully for Restart, so its
-controller brings it back, and immediately for Terminate, which is what a stuck pod needs.
+Restart and Terminate never fire on the first click. The three lines become `Are you sure?`,
+`[ Yes ]` and `[ Cancel ]`, and only `Yes` acts. What acting means follows the row. A pod is
+deleted: gracefully for Restart, so its controller brings it back, and immediately for Terminate,
+which is what a stuck pod needs. A deployment, daemon set or stateful set is rolled out the way
+`kubectl rollout restart` does it, by stamping `kubectl.kubernetes.io/restartedAt` on its pod
+template, so the controller replaces the pods at its own pace and nothing is deleted behind its
+back. A replica set has no rollout of its own, so its pods are deleted gracefully instead.
+Terminate on any workload force-deletes the pods it owns and leaves the object itself alone.
 
 Inspect gives the pod, or the workload, a screen of its own, split into two framed panes: its
 configuration on the left, a live log stream on the right. The right pane is titled with the pod
@@ -155,7 +160,8 @@ Three buttons at the bottom pick how the configuration reads: `[ default ]` list
 shows the manifest. Each line of the stream carries the time the container printed it, which
 Kubernetes keeps for the lines written before ktop started too. The log pane has its own search
 box fenced off at its bottom edge: press `/` or click it, the stream filters as you type and every
-match is highlighted in place. `Esc` steps back to the table.
+match is highlighted in place. A line too long for the pane wraps under its own timestamp instead
+of being cut, so nothing is lost. `Esc` steps back to the table.
 
 All three views colour what usually matters: a broken status or an OOM kill in red, restarts,
 missing limits, a BestEffort class or a false condition in amber, a running container in green,
@@ -189,8 +195,9 @@ reported in plain words on the status line instead of a Go error:
 | pod logs | `no permission to read the logs of api-worker-1`, the configuration pane still works |
 | unreachable or expired credentials | `cannot reach the cluster at api.example.com`, `cluster rejected the credentials from your kubeconfig` |
 
-Restart and Terminate need `delete` on pods in that namespace; without it the click reports the
-refusal and changes nothing.
+Terminate, and Restart on a pod or a replica set, need `delete` on pods in that namespace; Restart
+on a deployment, daemon set or stateful set needs `patch` on that object. Without it the click
+reports the refusal, `no permission to restart deployment api`, and changes nothing.
 
 ## Development
 

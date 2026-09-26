@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
@@ -20,16 +22,20 @@ import (
 
 func testApp(t *testing.T, names ...string) *app {
 	t.Helper()
+	a, _ := testAppWith(t, k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "production"}}), names...)
+	return a
+}
+
+func testAppWith(t *testing.T, cs *k8sfake.Clientset, names ...string) (*app, *k8sfake.Clientset) {
+	t.Helper()
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
 		t.Fatalf("init screen: %v", err)
 	}
 	screen.SetSize(170, 40)
 
-	client := kube.NewWithClients(
-		k8sfake.NewSimpleClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "production"}}),
-		metricsfake.NewSimpleClientset(),
-	)
+	client := kube.NewWithClients(cs, metricsfake.NewSimpleClientset())
 
 	rows := make([]kube.Row, 0, len(names))
 	for _, name := range names {
@@ -50,7 +56,7 @@ func testApp(t *testing.T, names ...string) *app {
 		},
 	}
 	ui.ApplyFilter(a.model)
-	return a
+	return a, cs
 }
 
 func frame(t *testing.T, a *app) []string {
@@ -1323,5 +1329,54 @@ func TestChoosingAnotherPodRestartsTheStream(t *testing.T) {
 	}
 	if len(a.model.Inspect.Logs) != 0 {
 		t.Fatal("lines of the previous pod must be dropped")
+	}
+}
+
+func TestRestartRollsOutTheWorkloadUnderTheCursor(t *testing.T) {
+	replicas := int32(2)
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "production"},
+		Spec:       appsv1.DeploymentSpec{Replicas: &replicas},
+	}
+
+	a, cs := testAppWith(t, k8sfake.NewSimpleClientset(deploy), "api")
+	a.model.Kind = kube.KindDeployment
+	a.model.All[0].Pods = []string{"api-abc-1", "api-abc-2"}
+	ui.ApplyFilter(a.model)
+	a.model.Expanded = "api"
+	a.model.Confirm = ui.ActionRestart
+
+	a.runAction()
+	<-a.pods
+
+	out, err := cs.AppsV1().Deployments("production").Get(context.Background(), "api", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if out.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] == "" {
+		t.Error("Restart must roll the deployment out, not delete a pod named after it")
+	}
+	for _, action := range cs.Actions() {
+		if action.GetVerb() == "delete" {
+			t.Errorf("nothing may be deleted: %v", action)
+		}
+	}
+}
+
+func TestTerminateClearsThePodsOfTheWorkload(t *testing.T) {
+	a, cs := testAppWith(t, k8sfake.NewSimpleClientset(
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "api-abc-1", Namespace: "production"}},
+	), "api")
+	a.model.Kind = kube.KindDeployment
+	a.model.All[0].Pods = []string{"api-abc-1"}
+	ui.ApplyFilter(a.model)
+	a.model.Expanded = "api"
+	a.model.Confirm = ui.ActionTerminate
+
+	a.runAction()
+	<-a.pods
+
+	if _, err := cs.CoreV1().Pods("production").Get(context.Background(), "api-abc-1", metav1.GetOptions{}); err == nil {
+		t.Error("Terminate must take the pods of the workload down")
 	}
 }

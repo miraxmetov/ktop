@@ -44,7 +44,7 @@ func ExplainWorkload(err error, namespace string, kind Kind, name, host string) 
 	if err == nil {
 		return ""
 	}
-	what := strings.ToLower(strings.TrimSuffix(kind.String(), "s"))
+	what := singular(kind)
 	switch {
 	case apierrors.IsNotFound(err):
 		return fmt.Sprintf("%s %s is gone from namespace %s", what, name, namespace)
@@ -52,6 +52,20 @@ func ExplainWorkload(err error, namespace string, kind Kind, name, host string) 
 		return fmt.Sprintf("no permission to read %s %s", what, name)
 	}
 	return transportText(err, host, fmt.Sprintf("cannot read %s %s", what, name))
+}
+
+func ExplainRestart(err error, namespace string, kind Kind, name, host string) string {
+	if err == nil {
+		return ""
+	}
+	what := singular(kind)
+	switch {
+	case apierrors.IsNotFound(err):
+		return fmt.Sprintf("%s %s is gone from namespace %s", what, name, namespace)
+	case apierrors.IsForbidden(err):
+		return fmt.Sprintf("no permission to restart %s %s", what, name)
+	}
+	return transportText(err, host, fmt.Sprintf("cannot restart %s %s", what, name))
 }
 
 func ExplainPod(err error, namespace, name, host string) string {

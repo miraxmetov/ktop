@@ -813,9 +813,9 @@ func (a *app) handleInspectKey(e *tcell.EventKey) bool {
 	case tcell.KeyDown:
 		a.scrollPane(config, 1)
 	case tcell.KeyPgUp:
-		a.scrollPane(config, -ui.InspectRoom(width, height))
+		a.scrollPane(config, -inspectPage(config, width, height))
 	case tcell.KeyPgDn:
-		a.scrollPane(config, ui.InspectRoom(width, height))
+		a.scrollPane(config, inspectPage(config, width, height))
 	case tcell.KeyHome:
 		a.jumpPane(config, true)
 	case tcell.KeyEnd:
@@ -973,6 +973,13 @@ func (a *app) scroll(delta int) {
 		return
 	}
 	a.model.Offset += delta
+}
+
+func inspectPage(config bool, width, height int) int {
+	if config {
+		return ui.InspectRoom(width, height)
+	}
+	return ui.LogRoom(width, height)
 }
 
 func (a *app) scrollPane(config bool, delta int) {
@@ -1143,7 +1150,8 @@ func (a *app) choosePod(index int) {
 func (a *app) appendLog(line ui.LogLine) {
 	const keep = 2000
 	if a.model.Inspect.LogOffset > 0 && a.model.Inspect.Matches(line) {
-		a.model.Inspect.LogOffset++
+		width, height := a.screen.Size()
+		a.model.Inspect.LogOffset += ui.LogLineRows(*a.model, width, height, line)
 	}
 	a.model.Inspect.Logs = append(a.model.Inspect.Logs, line)
 	if len(a.model.Inspect.Logs) > keep {
@@ -1261,9 +1269,10 @@ func (a *app) runAction() {
 	}
 
 	namespace := a.namespace
-	force := action == ui.ActionTerminate
+	kind := a.model.Kind
+	pods := a.expandedPods()
 	verb := "restarting"
-	if force {
+	if action == ui.ActionTerminate {
 		verb = "terminating"
 	}
 	a.model.Note = verb + " " + name
@@ -1272,12 +1281,27 @@ func (a *app) runAction() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := a.client.DeletePod(ctx, namespace, name, force); err != nil {
+
+		var err error
+		if action == ui.ActionTerminate {
+			err = a.client.Terminate(ctx, namespace, kind, name, pods)
+		} else {
+			err = a.client.Restart(ctx, namespace, kind, name, pods)
+		}
+		if err != nil {
 			a.pods <- podResult{namespace: namespace, err: err}
 			return
 		}
 		a.pods <- podResult{namespace: namespace, result: kube.Result{}, err: nil}
 	}()
+}
+
+func (a *app) expandedPods() []string {
+	index := a.model.ExpandedIndex()
+	if index < 0 {
+		return nil
+	}
+	return a.model.Rows[index].Pods
 }
 
 func (a *app) scrollTo(index int) {

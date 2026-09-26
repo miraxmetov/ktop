@@ -717,7 +717,7 @@ func TestStatusCountersAreCentredAndColoured(t *testing.T) {
 	status := lines[lineStatus]
 	g := geom(m, width, 30)
 
-	block := "Facing 6 critical / 0 warning regarding status / cpu / memory"
+	block := "Facing 6 critical / 0 warnings regarding status / cpu / memory"
 	start := strings.Index(status, block)
 	if start < 0 {
 		t.Fatalf("status line: %q", status)
@@ -1238,8 +1238,8 @@ func TestConfirmationTakesTheSameThreeLines(t *testing.T) {
 	g := geom(m, 170, 30)
 	xs := columnXs(g.widths)
 
-	if !strings.Contains(lines[rowTop+1], "Terminate ") {
-		t.Errorf("the question must name the action: %q", lines[rowTop+1])
+	if !strings.Contains(lines[rowTop+1], confirmQuestion) {
+		t.Errorf("the question opens the block: %q", lines[rowTop+1])
 	}
 	if !strings.Contains(lines[rowTop+2], "[ Yes ]") {
 		t.Errorf("Yes belongs on its own line: %q", lines[rowTop+2])
@@ -2145,23 +2145,22 @@ func TestHeaderKeepsItsArrowWhileCentred(t *testing.T) {
 	}
 }
 
-func TestConfirmationAsksAboutThePodWithoutItsName(t *testing.T) {
-	m := model(sample(2))
-	m.Expanded = m.Rows[0].Name
+func TestConfirmationAsksTheSameQuestionForBothActions(t *testing.T) {
+	for _, kind := range []kube.Kind{kube.KindPod, kube.KindDeployment} {
+		for _, action := range []Action{ActionRestart, ActionTerminate} {
+			m := model(sample(2))
+			m.Kind = kind
+			m.Expanded = m.Rows[0].Name
+			m.Confirm = action
 
-	m.Confirm = ActionRestart
-	lines, _ := draw(t, 170, 30, m)
-	if !strings.Contains(lines[rowTop+1], "Restart the pod?") {
-		t.Errorf("restart question: %q", lines[rowTop+1])
-	}
-	if strings.Contains(lines[rowTop+1], "pod-00") {
-		t.Errorf("the name is already on the row above: %q", lines[rowTop+1])
-	}
-
-	m.Confirm = ActionTerminate
-	lines, _ = draw(t, 170, 30, m)
-	if !strings.Contains(lines[rowTop+1], "Terminate the pod?") {
-		t.Errorf("terminate question: %q", lines[rowTop+1])
+			lines, _ := draw(t, 170, 30, m)
+			if !strings.Contains(lines[rowTop+1], "Are you sure?") {
+				t.Errorf("%v %v: %q", kind, action, lines[rowTop+1])
+			}
+			if strings.Contains(lines[rowTop+1], "pod-00") {
+				t.Errorf("the name is already on the row above: %q", lines[rowTop+1])
+			}
+		}
 	}
 }
 
@@ -2279,5 +2278,96 @@ func TestSinglePodPaneStaysPlain(t *testing.T) {
 	lines, _ := draw(t, 140, 28, m)
 	if strings.Contains(lines[inspectTop], sortBoth) {
 		t.Errorf("one pod means nothing to pick: %q", lines[inspectTop])
+	}
+}
+
+func TestLongLogLinesWrapInsteadOfBeingCut(t *testing.T) {
+	m := inspecting()
+	tail := "the quick brown fox jumps over the lazy dog and keeps running well past the edge of this pane"
+	m.Inspect.Logs = []LogLine{{Time: "18:00:01", Text: tail}}
+
+	lines, _ := draw(t, 140, 28, m)
+	g := inspectGeomFor(140, 28, 0)
+
+	first, second := "", ""
+	for i, line := range lines {
+		if strings.Contains(line, "the quick brown fox") {
+			first, second = line, lines[i+1]
+			break
+		}
+	}
+	if first == "" {
+		t.Fatal("the log line is not on screen")
+	}
+
+	cut := func(line string) string {
+		return string([]rune(line)[g.logs.x : g.logs.x+g.logs.w])
+	}
+	joined := strings.Join(strings.Fields(cut(first)+" "+cut(second)), " ")
+	if !strings.Contains(joined, tail) {
+		t.Errorf("the whole line must survive the wrap:\n%q\n%q", first, second)
+	}
+
+	pane := []rune(second)[g.logs.x : g.logs.x+g.logs.w]
+	if !strings.HasPrefix(string(pane), strings.Repeat(" ", len("18:00:01 "))) {
+		t.Errorf("the tail must sit under the message, not under the clock: %q", string(pane))
+	}
+}
+
+func TestWrappedLogLinesCountAsRowsForScrolling(t *testing.T) {
+	m := inspecting()
+	long := strings.Repeat("word ", 400)
+	m.Inspect.Logs = []LogLine{{Time: "18:00:01", Text: long}}
+
+	if MaxLogOffset(m, 140, 28) == 0 {
+		t.Fatal("one very long line must still be scrollable")
+	}
+
+	m.Inspect.Logs = []LogLine{{Time: "18:00:01", Text: "short"}}
+	if got := MaxLogOffset(m, 140, 28); got != 0 {
+		t.Errorf("a single short line has nothing to scroll: %d", got)
+	}
+}
+
+func TestWrappedLogLinesKeepTheirHighlight(t *testing.T) {
+	m := inspecting()
+	m.Inspect.Logs = []LogLine{{
+		Time: "18:00:01",
+		Text: strings.Repeat("filler ", 12) + "needle at the end of a long line",
+	}}
+	m.Inspect.LogQuery = "needle"
+
+	lines, screen := draw(t, 140, 28, m)
+	for i, line := range lines {
+		if !strings.Contains(line, "needle") {
+			continue
+		}
+		if _, bg, _ := styleAt(t, screen, line, "needle", i).Decompose(); bg != warnColor {
+			t.Errorf("the match must stay highlighted after the wrap, got %v", bg)
+		}
+		return
+	}
+	t.Fatal("the match is not on screen")
+}
+
+func TestKindBoxKeepsItsWidthWhateverIsChosen(t *testing.T) {
+	widths := make(map[int]kube.Kind, len(kube.Kinds()))
+	for _, kind := range kube.Kinds() {
+		m := model(sample(2))
+		m.Kind = kind
+		widths[geom(m, 170, 30).kindBox.w] = kind
+	}
+	if len(widths) != 1 {
+		t.Fatalf("the box must not resize with the name: %v", widths)
+	}
+
+	m := model(sample(2))
+	m.Focus = FocusKind
+	g := geom(m, 170, 30)
+	if g.dropdown.w != g.kindBox.w {
+		t.Errorf("the open menu must match the box: %d against %d", g.dropdown.w, g.kindBox.w)
+	}
+	if g.dropdown.x != g.kindBox.x {
+		t.Errorf("the menu must hang under the box: %d against %d", g.dropdown.x, g.kindBox.x)
 	}
 }

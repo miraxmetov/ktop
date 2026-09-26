@@ -85,11 +85,20 @@ func InspectRoom(width, height int) int {
 
 func MaxLogOffset(m Model, width, height int) int {
 	g := inspectGeomFor(width, height, len(m.Inspect.LogPods))
-	hidden := len(m.Inspect.VisibleLogs()) - g.logRoom
+	hidden := len(logRows(m.Inspect.VisibleLogs(), m.Inspect.LogQuery, g.logs.w)) - g.logRoom
 	if hidden < 0 {
 		return 0
 	}
 	return hidden
+}
+
+func LogRoom(width, height int) int {
+	return inspectGeom(width, height).logRoom
+}
+
+func LogLineRows(m Model, width, height int, line LogLine) int {
+	g := inspectGeomFor(width, height, len(m.Inspect.LogPods))
+	return len(logRows([]LogLine{line}, m.Inspect.LogQuery, g.logs.w))
 }
 
 func MaxInspectOffset(m Model, width, height int) int {
@@ -336,9 +345,10 @@ func drawLogs(s tcell.Screen, m Model, g inspectGeometry) {
 			}
 			puts(s, x, top, g.logs.w, false, message, styleDim)
 		}
-		end := len(lines) - m.Inspect.LogOffset
-		if end > len(lines) {
-			end = len(lines)
+		rows := logRows(lines, m.Inspect.LogQuery, g.logs.w)
+		end := len(rows) - m.Inspect.LogOffset
+		if end > len(rows) {
+			end = len(rows)
 		}
 		if end < 0 {
 			end = 0
@@ -347,11 +357,10 @@ func drawLogs(s tcell.Screen, m Model, g inspectGeometry) {
 		if start < 0 {
 			start = 0
 		}
-		lines = lines[:end]
-		for i := 0; start+i < len(lines) && i < g.logRoom; i++ {
-			putSegments(s, x, top+i, g.logs.w, logSegments(lines[start+i], m.Inspect.LogQuery))
+		for i := 0; start+i < end; i++ {
+			putSegments(s, x, top+i, g.logs.w, rows[start+i])
 		}
-		drawLogMarkers(s, g, start, m.Inspect.LogOffset)
+		drawLogMarkers(s, g, start, len(rows)-end)
 	}
 
 	shown, text, style := m.Inspect.LogQuery, m.Inspect.LogQuery, styleInput
@@ -582,6 +591,82 @@ func logSegments(line LogLine, query string) []segment {
 		}
 		out = append(out, segment{rest[index : index+len(query)], styleMatch})
 		rest = rest[index+len(query):]
+	}
+	return out
+}
+
+func logRows(lines []LogLine, query string, width int) [][]segment {
+	out := make([][]segment, 0, len(lines))
+	for _, line := range lines {
+		indent := 0
+		if line.Time != "" {
+			indent = len([]rune(line.Time)) + 1
+		}
+		out = append(out, wrapSegments(logSegments(line, query), width, indent)...)
+	}
+	return out
+}
+
+func wrapSegments(segments []segment, width, indent int) [][]segment {
+	if width < 1 {
+		width = 1
+	}
+	if indent >= width {
+		indent = 0
+	}
+
+	runes := make([]rune, 0, 64)
+	styles := make([]tcell.Style, 0, 64)
+	for _, seg := range segments {
+		for _, r := range seg.text {
+			runes = append(runes, r)
+			styles = append(styles, seg.style)
+		}
+	}
+	if len(runes) == 0 {
+		return [][]segment{{}}
+	}
+
+	rows := make([][]segment, 0, 1+len(runes)/width)
+	start, room, pad := 0, width, 0
+
+	for start < len(runes) {
+		if start+room >= len(runes) {
+			rows = append(rows, rowSegments(runes[start:], styles[start:], pad))
+			break
+		}
+
+		cut := start + room
+		for i := cut; i > start; i-- {
+			if runes[i-1] == ' ' {
+				cut = i
+				break
+			}
+		}
+		rows = append(rows, rowSegments(runes[start:cut], styles[start:cut], pad))
+
+		start = cut
+		for start < len(runes) && runes[start] == ' ' {
+			start++
+		}
+		room, pad = width-indent, indent
+	}
+	return rows
+}
+
+func rowSegments(runes []rune, styles []tcell.Style, pad int) []segment {
+	out := make([]segment, 0, 4)
+	if pad > 0 {
+		out = append(out, segment{strings.Repeat(" ", pad), styleBase})
+	}
+
+	for i := 0; i < len(runes); {
+		j := i
+		for j < len(runes) && styles[j] == styles[i] {
+			j++
+		}
+		out = append(out, segment{string(runes[i:j]), styles[i]})
+		i = j
 	}
 	return out
 }

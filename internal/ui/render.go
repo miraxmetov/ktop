@@ -573,13 +573,17 @@ func geom(m Model, width, height int) geometry {
 	}
 	g.kubeInput = rect{x: kubeX, y: lineTitle, w: kubeWidth, h: 1}
 
-	kindText := m.Kind.String()
-	kindWidth := len([]rune(kindText)) + 6
+	kindWidth := 0
+	for _, kind := range kube.Kinds() {
+		if w := len([]rune(kind.String())) + 6; w > kindWidth {
+			kindWidth = w
+		}
+	}
 	g.kindBox = rect{x: max(0, (total-kindWidth)/2), y: nsBoxTop, w: kindWidth, h: 3}
 
 	crit, warn := m.Counts()
 	critText := fmt.Sprintf("%d critical", crit)
-	warnText := fmt.Sprintf("%d warning", warn)
+	warnText := fmt.Sprintf("%d warnings", warn)
 	groupWidth := len(facingPrefix) + len(critText) + 3 + len(warnText) + len(dimensionPrefix) +
 		len("status") + 3 + len("cpu") + 3 + len("memory")
 	x := max(0, (total-groupWidth)/2) + len(facingPrefix)
@@ -915,13 +919,14 @@ func drawBox(s tcell.Screen, box rect, focused bool) {
 }
 
 const (
-	inspectLabel   = "[ Inspect ]"
-	restartLabel   = "[ Restart ]"
-	terminateLabel = "[ Terminate ]"
-	yesLabel       = "[ Yes ]"
-	cancelLabel    = "[ Cancel ]"
-	actionIndent   = 2
-	actionGap      = 2
+	inspectLabel    = "[ Inspect ]"
+	restartLabel    = "[ Restart ]"
+	terminateLabel  = "[ Terminate ]"
+	yesLabel        = "[ Yes ]"
+	confirmQuestion = "Are you sure?"
+	cancelLabel     = "[ Cancel ]"
+	actionIndent    = 2
+	actionGap       = 2
 )
 
 func actionLabel(m Model, line int) (string, tcell.Style) {
@@ -932,7 +937,7 @@ func actionLabel(m Model, line int) (string, tcell.Style) {
 		}
 		switch line {
 		case 0:
-			return confirmQuestion(m), style
+			return confirmQuestion, style
 		case 1:
 			return yesLabel, style.Bold(true)
 		}
@@ -966,13 +971,6 @@ func actionTarget(m Model, line int) Target {
 		return HitActionRestart
 	}
 	return HitActionTerminate
-}
-
-func confirmQuestion(m Model) string {
-	if m.Confirm == ActionTerminate {
-		return "Terminate the pod?"
-	}
-	return "Restart the pod?"
 }
 
 func drawActions(s tcell.Screen, m Model, g geometry, y, line int) {
@@ -1118,7 +1116,8 @@ func Draw(s tcell.Screen, m Model) {
 	crit, warn := m.Counts()
 
 	drawBox(s, g.kindBox, m.Focus == FocusKind)
-	puts(s, g.kindBox.x+3, nsBoxTop+1, g.kindBox.w-6, false, m.Kind.String(),
+	puts(s, g.kindBox.x+3, nsBoxTop+1, g.kindBox.w-6, false,
+		centerText(m.Kind.String(), g.kindBox.w-6),
 		pickStyle(styleChoice, m.Focus == FocusKind))
 
 	puts(s, g.critical.x-len(facingPrefix), lineStatus, 0, false, facingPrefix, styleDim)
@@ -1134,7 +1133,7 @@ func Draw(s tcell.Screen, m Model) {
 	puts(s, g.critical.x, lineStatus, 0, false, fmt.Sprintf("%d critical", crit),
 		pickStyle(styleBad, m.Level == kube.LevelCritical))
 	puts(s, g.critical.x+g.critical.w, lineStatus, 0, false, " / ", styleDim)
-	puts(s, g.warning.x, lineStatus, 0, false, fmt.Sprintf("%d warning", warn),
+	puts(s, g.warning.x, lineStatus, 0, false, fmt.Sprintf("%d warnings", warn),
 		pickStyle(styleWarn, m.Level == kube.LevelWarning))
 
 	puts(s, g.warning.x+g.warning.w, lineStatus, 0, false, dimensionPrefix, styleDim)

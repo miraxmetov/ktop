@@ -42,9 +42,9 @@ homebrew_casks:
     repository:
       owner: miraxmetov
       name: homebrew-tap
-      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Casks
-    skip_upload: '{{ if envOrDefault "HOMEBREW_TAP_TOKEN" "" }}false{{ else }}true{{ end }}'
+    skip_upload: '{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}'
     homepage: https://github.com/miraxmetov/ktop
     description: A terminal window into one Kubernetes namespace
     license: mit

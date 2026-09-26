@@ -201,12 +201,12 @@ func metricsfakeForbidden() *metricsfake.Clientset {
 
 func TestFilterLevel(t *testing.T) {
 	rows := []Row{
-		{Name: "hot", Worst: 95},
-		{Name: "warm", Worst: 80},
-		{Name: "edge-crit", Worst: 90},
-		{Name: "edge-warn", Worst: 75},
-		{Name: "calm", Worst: 10},
-		{Name: "unknown", Worst: -1},
+		{Name: "hot", CPUPct: 95, Worst: 95},
+		{Name: "warm", CPUPct: 80, Worst: 80},
+		{Name: "edge-crit", MemPct: 90, Worst: 90},
+		{Name: "edge-warn", MemPct: 75, Worst: 75},
+		{Name: "calm", CPUPct: 10, Worst: 10},
+		{Name: "unknown", CPUPct: -1, MemPct: -1, Worst: -1},
 	}
 
 	critical := FilterLevel(rows, LevelCritical, DimAll)

@@ -1380,3 +1380,35 @@ func TestTerminateClearsThePodsOfTheWorkload(t *testing.T) {
 		t.Error("Terminate must take the pods of the workload down")
 	}
 }
+
+func TestArgumentsPickAScope(t *testing.T) {
+	cases := []struct {
+		args      []string
+		kind      kube.Kind
+		level     kube.Level
+		namespace string
+		report    bool
+	}{
+		{[]string{}, kube.KindPod, kube.LevelAll, "", false},
+		{[]string{"po"}, kube.KindPod, kube.LevelAll, "", false},
+		{[]string{"d"}, kube.KindDeployment, kube.LevelAll, "", false},
+		{[]string{"rs"}, kube.KindReplicaSet, kube.LevelAll, "", false},
+		{[]string{"ds"}, kube.KindDaemonSet, kube.LevelAll, "", false},
+		{[]string{"sts"}, kube.KindStatefulSet, kube.LevelAll, "", false},
+		{[]string{"panic"}, kube.KindDeployment, kube.LevelCritical, "", false},
+		{[]string{"status"}, kube.KindPod, kube.LevelAll, "", true},
+		{[]string{"production"}, kube.KindPod, kube.LevelAll, "production", false},
+		{[]string{"ds", "production"}, kube.KindDaemonSet, kube.LevelAll, "production", false},
+		{[]string{"production", "d"}, kube.KindDeployment, kube.LevelAll, "production", false},
+	}
+
+	for _, c := range cases {
+		var opts options
+		readArgs(c.args, &opts)
+
+		if opts.kind != c.kind || opts.level != c.level || opts.namespace != c.namespace || opts.report != c.report {
+			t.Errorf("%v: kind %v, level %v, namespace %q, report %v",
+				c.args, opts.kind, opts.level, opts.namespace, opts.report)
+		}
+	}
+}

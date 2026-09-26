@@ -6,6 +6,20 @@ _ktop_namespaces() {
     _describe -t namespaces 'namespace' ns
 }
 
+_ktop_scopes() {
+    local -a scopes
+    scopes=(
+        'po:open on pods'
+        'd:open on deployments'
+        'rs:open on replica sets'
+        'ds:open on daemon sets'
+        'sts:open on stateful sets'
+        'panic:open on critical deployments'
+        'status:print the status line and exit'
+    )
+    _describe -t scopes 'scope' scopes
+}
+
 _ktop_contexts() {
     local -a ctx
     ctx=(${(f)"$(kubectl config get-contexts -o name 2>/dev/null)"})
@@ -18,4 +32,4 @@ _arguments -s \
     '(-i --interval)'{-i,--interval}'[refresh interval in seconds]:seconds:' \
     '(-n --namespace)'{-n,--namespace}'[namespace to watch]:namespace:_ktop_namespaces' \
     '(-c --context)'{-c,--context}'[kube context]:context:_ktop_contexts' \
-    '1:namespace:_ktop_namespaces'
+    '1:namespace or scope:_alternative "scopes:scope:_ktop_scopes" "namespaces:namespace:_ktop_namespaces"'

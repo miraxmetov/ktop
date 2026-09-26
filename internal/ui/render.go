@@ -463,6 +463,9 @@ type geometry struct {
 	podInput  rect
 	kubeInput rect
 	kindBox   rect
+	status    []kube.StatusPart
+	statusXs  []int
+	statusX   int
 	critical  rect
 	warning   rect
 	dimStatus rect
@@ -581,22 +584,37 @@ func geom(m Model, width, height int) geometry {
 	}
 	g.kindBox = rect{x: max(0, (total-kindWidth)/2), y: nsBoxTop, w: kindWidth, h: 3}
 
-	crit, warn := m.Counts()
-	critText := fmt.Sprintf("%d critical", crit)
-	warnText := fmt.Sprintf("%d warnings", warn)
-	groupWidth := len(facingPrefix) + len(critText) + 3 + len(warnText) + len(dimensionPrefix) +
-		len("status") + 3 + len("cpu") + 3 + len("memory")
-	x := max(0, (total-groupWidth)/2) + len(facingPrefix)
+	g.status = kube.StatusLine(m.All, m.Level, m.Dimension)
+	statusWidth := 0
+	for _, part := range g.status {
+		statusWidth += len([]rune(part.Text))
+	}
 
-	g.critical = rect{x: x, y: lineStatus, w: len(critText), h: 1}
-	x += len(critText) + 3
-	g.warning = rect{x: x, y: lineStatus, w: len(warnText), h: 1}
-	x += len(warnText) + len(dimensionPrefix)
-	g.dimStatus = rect{x: x, y: lineStatus, w: len("status"), h: 1}
-	x += len("status") + 3
-	g.dimCPU = rect{x: x, y: lineStatus, w: len("cpu"), h: 1}
-	x += len("cpu") + 3
-	g.dimMemory = rect{x: x, y: lineStatus, w: len("memory"), h: 1}
+	x := max(0, (total-statusWidth)/2)
+	g.statusX = x
+	g.statusXs = make([]int, len(g.status))
+
+	for i, part := range g.status {
+		g.statusXs[i] = x
+		box := rect{x: x, y: lineStatus, w: len([]rune(part.Text)), h: 1}
+
+		switch part.Kind {
+		case kube.StatusCritical:
+			g.critical = box
+		case kube.StatusWarning:
+			g.warning = box
+		case kube.StatusDimension:
+			switch part.Dimension {
+			case kube.DimStatus:
+				g.dimStatus = box
+			case kube.DimCPU:
+				g.dimCPU = box
+			case kube.DimMemory:
+				g.dimMemory = box
+			}
+		}
+		x += box.w
+	}
 
 	if m.Focus != FocusTable {
 		g.options = m.Options()
@@ -1178,35 +1196,22 @@ func Draw(s tcell.Screen, m Model) {
 		puts(s, noteX, lineNs, max(0, total-noteX), false, m.NamespaceNote, styleDim)
 	}
 
-	crit, warn := m.Counts()
-
 	drawBox(s, g.kindBox, m.Focus == FocusKind)
 	puts(s, g.kindBox.x+3, nsBoxTop+1, g.kindBox.w-6, false,
 		centerText(m.Kind.String(), g.kindBox.w-6),
 		pickStyle(styleChoice, m.Focus == FocusKind))
-
-	puts(s, g.critical.x-len(facingPrefix), lineStatus, 0, false, facingPrefix, styleDim)
 
 	message, messageStyle := m.Note, styleWarn
 	if m.Err != "" {
 		message, messageStyle = m.Err, styleBad
 	}
 	if message != "" {
-		puts(s, 0, lineStatus, 0, false, truncate(message, max(0, g.critical.x-2)), messageStyle)
+		puts(s, 0, lineStatus, 0, false, truncate(message, max(0, g.statusX-2)), messageStyle)
 	}
 
-	puts(s, g.critical.x, lineStatus, 0, false, fmt.Sprintf("%d critical", crit),
-		pickStyle(styleBad, m.Level == kube.LevelCritical))
-	puts(s, g.critical.x+g.critical.w, lineStatus, 0, false, " / ", styleDim)
-	puts(s, g.warning.x, lineStatus, 0, false, fmt.Sprintf("%d warnings", warn),
-		pickStyle(styleWarn, m.Level == kube.LevelWarning))
-
-	puts(s, g.warning.x+g.warning.w, lineStatus, 0, false, dimensionPrefix, styleDim)
-	puts(s, g.dimStatus.x, lineStatus, 0, false, "status", pickStyle(styleChoice, m.Dimension == kube.DimStatus))
-	puts(s, g.dimStatus.x+g.dimStatus.w, lineStatus, 0, false, " / ", styleDim)
-	puts(s, g.dimCPU.x, lineStatus, 0, false, "cpu", pickStyle(styleChoice, m.Dimension == kube.DimCPU))
-	puts(s, g.dimCPU.x+g.dimCPU.w, lineStatus, 0, false, " / ", styleDim)
-	puts(s, g.dimMemory.x, lineStatus, 0, false, "memory", pickStyle(styleChoice, m.Dimension == kube.DimMemory))
+	for i, part := range g.status {
+		puts(s, g.statusXs[i], lineStatus, 0, false, part.Text, statusStyle(m, part))
+	}
 
 	drawBox(s, g.podBox, m.Focus == FocusPods)
 	drawInput(s, g.podInput, m.PodQuery, podPlaceholder, m.Focus == FocusPods)
@@ -1340,10 +1345,19 @@ func justify(items []string, width int) string {
 	return line.String()
 }
 
-const (
-	dimensionPrefix = " regarding "
-	facingPrefix    = "Facing "
-)
+const ()
+
+func statusStyle(m Model, part kube.StatusPart) tcell.Style {
+	switch part.Kind {
+	case kube.StatusCritical:
+		return pickStyle(styleBad, m.Level == kube.LevelCritical)
+	case kube.StatusWarning:
+		return pickStyle(styleWarn, m.Level == kube.LevelWarning)
+	case kube.StatusDimension:
+		return pickStyle(styleChoice, m.Dimension == part.Dimension)
+	}
+	return styleDim
+}
 
 func pickStyle(base tcell.Style, active bool) tcell.Style {
 	if active {
@@ -1367,7 +1381,7 @@ func emptyLevelText(kind kube.Kind, level kube.Level, dimension kube.Dimension) 
 	case kube.DimMemory:
 		return "No " + noun + " is " + what + " by memory."
 	}
-	return "No " + noun + " is " + what + " by cpu or memory."
+	return "No " + noun + " is " + what + " by status, cpu or memory."
 }
 
 const marqueePause = 6

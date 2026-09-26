@@ -272,7 +272,30 @@ func Classify(r Row, dimension Dimension) Level {
 	case DimMemory:
 		return pctLevel(r.MemPct)
 	}
-	return pctLevel(r.Worst)
+
+	worst := LevelAll
+	for _, d := range Dimensions() {
+		if level := Classify(r, d); level > worst {
+			worst = level
+		}
+	}
+	return worst
+}
+
+func Dimensions() []Dimension {
+	return []Dimension{DimStatus, DimCPU, DimMemory}
+}
+
+func (d Dimension) String() string {
+	switch d {
+	case DimStatus:
+		return "status"
+	case DimCPU:
+		return "cpu"
+	case DimMemory:
+		return "memory"
+	}
+	return "all"
 }
 
 func pctLevel(pct float64) Level {

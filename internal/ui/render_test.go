@@ -134,7 +134,7 @@ func TestDrawWideShowsEveryColumn(t *testing.T) {
 			t.Errorf("header missing %q: %q", title, header)
 		}
 	}
-	if !strings.Contains(lines[lineStatus], "critical") || !strings.Contains(lines[lineStatus], "warning") {
+	if !strings.Contains(lines[lineStatus], "critical") || !strings.Contains(lines[lineStatus], "issues regarding") {
 		t.Errorf("status line: %q", lines[lineStatus])
 	}
 	if !strings.Contains(lines[rowTop], "pod-00") || !strings.Contains(lines[rowTop], "137 (OOMKilled)") {
@@ -402,7 +402,7 @@ func TestDrawEmptyNamespace(t *testing.T) {
 	if !strings.Contains(strings.Join(lines, "\n"), "No resources found in this namespace.") {
 		t.Errorf("empty state: %q", strings.Join(lines[rowTop:rowTop+6], "\n"))
 	}
-	if !strings.Contains(lines[lineStatus], "0 critical") {
+	if !strings.Contains(lines[lineStatus], "Nothing is wrong in this namespace.") {
 		t.Errorf("counters with no rows: %q", lines[lineStatus])
 	}
 }
@@ -717,7 +717,7 @@ func TestStatusCountersAreCentredAndColoured(t *testing.T) {
 	status := lines[lineStatus]
 	g := geom(m, width, 30)
 
-	block := "Facing 6 critical / 0 warnings regarding status / cpu / memory"
+	block := "Facing 6 critical issues regarding cpu and memory."
 	start := strings.Index(status, block)
 	if start < 0 {
 		t.Fatalf("status line: %q", status)
@@ -731,8 +731,19 @@ func TestStatusCountersAreCentredAndColoured(t *testing.T) {
 	if fg, _, _ := cells[lineStatus*w+g.critical.x].Style.Decompose(); fg != tcell.ColorRed {
 		t.Errorf("critical must be red, got %v", fg)
 	}
-	if fg, _, _ := cells[lineStatus*w+g.warning.x].Style.Decompose(); fg != warnColor {
-		t.Errorf("warning must keep its amber colour even at zero, got %v", fg)
+	if g.warning.w != 0 || strings.Contains(status, "warning") {
+		t.Errorf("with nothing warning the word stays away: %q", status)
+	}
+
+	warned := troubled()
+	warnedLines, warnedScreen := draw(t, width, 30, warned)
+	warnedCells, ww, _ := warnedScreen.GetContents()
+	gw := geom(warned, width, 30)
+	if !strings.Contains(warnedLines[lineStatus], "1 warning") {
+		t.Errorf("a warning must be counted: %q", warnedLines[lineStatus])
+	}
+	if fg, _, _ := warnedCells[lineStatus*ww+gw.warning.x].Style.Decompose(); fg != warnColor {
+		t.Errorf("warning keeps its amber colour, got %v", fg)
 	}
 	if fg, _, _ := cells[lineStatus*w+start].Style.Decompose(); fg != tcell.ColorGray {
 		t.Errorf("the word Facing stays quiet, got %v", fg)
@@ -788,6 +799,16 @@ func TestCounterColumnsAreCentred(t *testing.T) {
 			t.Errorf("%q is not centred in its column: %q (%d left, %d right)", c.value, field, left, right)
 		}
 	}
+}
+
+func troubled() Model {
+	rows := sample(5)
+	rows[0].Severity = kube.Bad
+	rows[1].Worst, rows[1].CPUPct, rows[1].MemPct = 95, 95, 40
+	rows[2].Worst, rows[2].CPUPct, rows[2].MemPct = 80, 20, 80
+	rows[3].Worst, rows[3].CPUPct, rows[3].MemPct = 10, 10, 10
+	rows[4].Worst, rows[4].CPUPct, rows[4].MemPct = -1, -1, -1
+	return model(rows)
 }
 
 func levelled() Model {
@@ -892,16 +913,16 @@ func TestEmptyLevelFilterExplainsItself(t *testing.T) {
 	ApplyFilter(&m)
 
 	lines, _ := draw(t, 170, 30, m)
-	if !strings.Contains(strings.Join(lines, "\n"), "No pod is critical by cpu or memory.") {
+	if !strings.Contains(strings.Join(lines, "\n"), "No pod is critical by status, cpu or memory.") {
 		t.Errorf("empty state: %q", strings.Join(lines[rowTop:rowTop+8], "\n"))
 	}
 }
 
 func TestDimensionsAreDrawnAndClickable(t *testing.T) {
-	m := levelled()
+	m := troubled()
 	lines, _ := draw(t, 170, 30, m)
 
-	if !strings.Contains(lines[lineStatus], "regarding status / cpu / memory") {
+	if !strings.Contains(lines[lineStatus], "regarding status, cpu and memory.") {
 		t.Fatalf("status line: %q", lines[lineStatus])
 	}
 
@@ -918,8 +939,8 @@ func TestDimensionsAreDrawnAndClickable(t *testing.T) {
 			t.Errorf("click at %d: got %v, want %v", c.rect.x+1, target, c.target)
 		}
 	}
-	if target, _ := Hit(m, 170, 30, g.dimStatus.x-2, lineStatus); target != HitNone {
-		t.Errorf("the separator is not clickable: %v", target)
+	if target, _ := Hit(m, 170, 30, g.dimStatus.x+g.dimStatus.w, lineStatus); target != HitNone {
+		t.Errorf("the comma is not clickable: %v", target)
 	}
 }
 
@@ -931,8 +952,8 @@ func TestDimensionRecountsAndRefilters(t *testing.T) {
 	rows[3].Severity, rows[3].CPUPct, rows[3].MemPct, rows[3].Worst = kube.Good, 5, 5, 5
 
 	m := model(rows)
-	if crit, warn := m.Counts(); crit != 1 || warn != 1 {
-		t.Fatalf("without a dimension the counters use cpu or memory: %d/%d", crit, warn)
+	if crit, warn := m.Counts(); crit != 2 || warn != 1 {
+		t.Fatalf("without a dimension the counters take the worst of every dimension: %d/%d", crit, warn)
 	}
 
 	m.Dimension = kube.DimStatus
@@ -953,13 +974,13 @@ func TestDimensionRecountsAndRefilters(t *testing.T) {
 	}
 
 	lines, _ := draw(t, 170, 30, m)
-	if !strings.Contains(lines[lineStatus], "0 critical / 1 warning") {
+	if !strings.Contains(lines[lineStatus], "Facing 1 warning issue regarding status, cpu and memory.") {
 		t.Errorf("counters must follow the dimension: %q", lines[lineStatus])
 	}
 }
 
 func TestSelectedDimensionIsHighlighted(t *testing.T) {
-	m := levelled()
+	m := troubled()
 	m.Dimension = kube.DimCPU
 
 	_, screen := draw(t, 170, 30, m)
@@ -1021,7 +1042,7 @@ func TestWarningColourIsAmber(t *testing.T) {
 }
 
 func TestDimensionWordsStandOutFromTheirLabel(t *testing.T) {
-	m := levelled()
+	m := troubled()
 	_, screen := draw(t, 170, 30, m)
 	cells, w, _ := screen.GetContents()
 	g := geom(m, 170, 30)
@@ -1044,6 +1065,7 @@ func TestDimensionWordsStandOutFromTheirLabel(t *testing.T) {
 	m.Dimension = kube.DimCPU
 	_, chosen := draw(t, 170, 30, m)
 	cells, w, _ = chosen.GetContents()
+	g = geom(m, 170, 30)
 	fg, _, attrs := cells[lineStatus*w+g.dimCPU.x].Style.Decompose()
 	if fg != tcell.Color231 || attrs&tcell.AttrReverse == 0 {
 		t.Errorf("the chosen word keeps its colour and gets highlighted, got %v %v", fg, attrs)
@@ -2432,4 +2454,51 @@ func mustDraw(t *testing.T, m Model) []string {
 	t.Helper()
 	lines, _ := draw(t, 170, 30, m)
 	return lines[rowTop : rowTop+geom(m, 170, 30).room]
+}
+
+func TestStatusLineFollowsWhatIsWrong(t *testing.T) {
+	calm := model(sample(3))
+	for i := range calm.All {
+		calm.All[i].Severity, calm.All[i].CPUPct, calm.All[i].MemPct, calm.All[i].Worst = kube.Good, 10, 10, 10
+	}
+	ApplyFilter(&calm)
+
+	lines, _ := draw(t, 170, 30, calm)
+	if !strings.Contains(lines[lineStatus], "Nothing is wrong in this namespace.") {
+		t.Errorf("a calm namespace: %q", lines[lineStatus])
+	}
+	if g := geom(calm, 170, 30); g.critical.w != 0 || g.dimCPU.w != 0 {
+		t.Error("nothing that is not wrong may be clicked")
+	}
+
+	m := troubled()
+	lines, _ = draw(t, 170, 30, m)
+	if !strings.Contains(lines[lineStatus], "Facing 2 critical and 1 warning issues regarding status, cpu and memory.") {
+		t.Errorf("a troubled namespace: %q", lines[lineStatus])
+	}
+
+	g := geom(m, 170, 30)
+	if target, _ := Hit(m, 170, 30, g.critical.x+1, lineStatus); target != HitCritical {
+		t.Errorf("the count must stay clickable: %v", target)
+	}
+	if target, _ := Hit(m, 170, 30, g.dimMemory.x+1, lineStatus); target != HitDimMemory {
+		t.Errorf("the dimension must stay clickable: %v", target)
+	}
+}
+
+func TestChosenFilterStaysOnTheLineAtZero(t *testing.T) {
+	m := troubled()
+	m.Level = kube.LevelWarning
+	m.Dimension = kube.DimStatus
+	ApplyFilter(&m)
+
+	lines, _ := draw(t, 170, 30, m)
+	if !strings.Contains(lines[lineStatus], "0 warning") {
+		t.Fatalf("a chosen level must stay visible at zero: %q", lines[lineStatus])
+	}
+
+	g := geom(m, 170, 30)
+	if target, _ := Hit(m, 170, 30, g.warning.x+1, lineStatus); target != HitWarning {
+		t.Errorf("and clickable, to let it go: %v", target)
+	}
 }

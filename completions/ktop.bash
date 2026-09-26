@@ -11,6 +11,7 @@ _ktop() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     opts="-h --help -V --version -i --interval -n --namespace -c --context"
+    local scopes="po d rs ds sts panic status"
 
     case "$prev" in
         -i|--interval)
@@ -31,7 +32,7 @@ _ktop() {
             COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
             ;;
         *)
-            COMPREPLY=( $(compgen -W "$(_ktop_namespaces)" -- "$cur") )
+            COMPREPLY=( $(compgen -W "$scopes $(_ktop_namespaces)" -- "$cur") )
             ;;
     esac
 }

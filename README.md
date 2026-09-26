@@ -49,6 +49,20 @@ ktop production -i 5      # refresh every 5 seconds (default: 1)
 ktop -c staging -n web    # another kube context
 ```
 
+A word after the command opens ktop on a scope instead of pods: `po`, `d`, `rs`, `ds` and `sts`
+for pods, deployments, replica sets, daemon sets and stateful sets. `ktop panic` opens the
+deployments that are critical right now, and `ktop status` prints the status line for the
+namespace and exits, which is what a script or a prompt wants:
+
+```sh
+ktop d                    # open on deployments
+ktop ds production        # daemon sets of a namespace
+ktop panic                # critical deployments, filtered on arrival
+ktop status               # Facing 2 critical issues regarding status and memory.
+```
+
+A namespace that happens to be named like one of those words is still reachable with `-n`.
+
 Without an argument ktop takes the namespace of the current kubeconfig context, falling back to
 `default` when the context does not name one. The cluster comes from `$KUBECONFIG`, falling back
 to `~/.kube/config`:
@@ -127,12 +141,17 @@ it rests for a moment, walks to its end a character at a time, rests again and w
 
 ## Finding what is wrong
 
-The status line is a filter. `N critical / N warnings` counts the pods behind each number, and
-`issues regarding status / cpu / memory` decides what those words mean: pick `cpu` and the
-counters describe CPU against limits alone, pick `status` and they count crashing and not-ready
-pods. Click a number to keep only those pods, click the chosen word again to let the rest back in.
-Nothing is chosen by default, the current choice is highlighted, and `Esc` clears both. In a
-namespace with hundreds of pods that is the fastest way to see what is actually wrong.
+The status line is a filter, and it says only what is true: `Facing 2 critical issues regarding
+status and memory.` A dimension appears only while something is wrong in it, `critical` or
+`warning` only while something is at that level, and with a quiet namespace the whole sentence
+becomes `Nothing is wrong in this namespace.` It is rebuilt on every refresh, so it follows the
+cluster on its own.
+
+Every count and every dimension in it is clickable. Click a count to keep only those rows, click
+a dimension to decide what the counts mean: pick `cpu` and they describe CPU against limits alone,
+pick `status` and they count crashing and not-ready rows. Whatever you pick stays on the line even
+if it falls to zero, so you can always click it off; `Esc` clears both. In a namespace with
+hundreds of pods that is the fastest way to see what is actually wrong.
 
 Press `/` to search pods by name. The filter is applied again on every refresh, so a pod that
 comes back under a new name appears or disappears on its own. Press `n` to search namespaces, or

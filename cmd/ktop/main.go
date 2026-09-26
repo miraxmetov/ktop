@@ -23,6 +23,41 @@ type options struct {
 	namespace string
 	context   string
 	interval  time.Duration
+	kind      kube.Kind
+	level     kube.Level
+	report    bool
+}
+
+var scopes = map[string]kube.Kind{
+	"po":           kube.KindPod,
+	"pod":          kube.KindPod,
+	"pods":         kube.KindPod,
+	"d":            kube.KindDeployment,
+	"deploy":       kube.KindDeployment,
+	"deployments":  kube.KindDeployment,
+	"rs":           kube.KindReplicaSet,
+	"replicasets":  kube.KindReplicaSet,
+	"ds":           kube.KindDaemonSet,
+	"daemonsets":   kube.KindDaemonSet,
+	"sts":          kube.KindStatefulSet,
+	"statefulsets": kube.KindStatefulSet,
+}
+
+func readArgs(args []string, opts *options) {
+	for _, arg := range args {
+		switch {
+		case arg == "status":
+			opts.report = true
+		case arg == "panic":
+			opts.kind, opts.level = kube.KindDeployment, kube.LevelCritical
+		default:
+			if kind, ok := scopes[arg]; ok {
+				opts.kind = kind
+				continue
+			}
+			opts.namespace = arg
+		}
+	}
 }
 
 func parseFlags() (options, error) {
@@ -59,9 +94,7 @@ func parseFlags() (options, error) {
 	}
 
 	opts.namespace = nsFlag
-	if fs.NArg() > 0 {
-		opts.namespace = fs.Arg(0)
-	}
+	readArgs(fs.Args(), &opts)
 	opts.context = ctxFlag
 	opts.interval = time.Duration(intervalArg * float64(time.Second))
 	return opts, nil
@@ -70,7 +103,18 @@ func parseFlags() (options, error) {
 const usage = `ktop - live pod resource usage as a percentage of limits
 
 Usage:
-  ktop [namespace] [flags]
+  ktop [namespace] [scope] [flags]
+
+Scopes:
+  po, d, rs, ds, sts         open on pods, deployments, replica sets, daemon sets or
+                             stateful sets instead of pods
+                             ktop d
+
+  panic                      open on the deployments that are critical right now
+                             ktop panic
+
+  status                     print what is wrong in the namespace and exit
+                             ktop status
 
 Flags:
   -n, --namespace NAMESPACE  namespace to watch; without it ktop takes the one from the
@@ -91,10 +135,14 @@ Flags:
 
 The cluster comes from $KUBECONFIG, or ~/.kube/config; press c inside ktop to switch it.
 
+A namespace named like a scope is reached with -n, as in ktop -n status.
+
 Examples:
   ktop                       watch the namespace of the current context
   ktop production            watch a namespace by name
   ktop production -i 5       the same, refreshed every five seconds
+  ktop ds production         watch the daemon sets of that namespace
+  ktop status -n production  print its status line and exit
   KUBECONFIG=~/.kube/prod.yaml ktop
 `
 
@@ -162,6 +210,11 @@ func main() {
 	}
 	namespace := resolveNamespace(opts.namespace, defaultNamespace)
 
+	if opts.report {
+		report(client, namespace, opts.kind)
+		return
+	}
+
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ktop: "+err.Error())
@@ -189,6 +242,8 @@ func main() {
 			Kubeconfig: client.Kubeconfig,
 			Started:    time.Now(),
 			NameOrder:  kube.OrderAsc,
+			Kind:       opts.kind,
+			Level:      opts.level,
 		},
 	}
 
@@ -201,6 +256,20 @@ func main() {
 	}()
 
 	a.run()
+}
+
+func report(client *kube.Client, namespace string, kind kube.Kind) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	result, err := client.Rows(ctx, namespace, kind)
+	if err != nil {
+		fail(err)
+	}
+	fmt.Println(kube.StatusText(result.Rows, kube.LevelAll, kube.DimAll))
+	if result.Note != "" {
+		fmt.Println(result.Note)
+	}
 }
 
 func resolveNamespace(flag, fromConfig string) string {

@@ -474,7 +474,7 @@ type geometry struct {
 }
 
 const (
-	podPlaceholder  = "Search for pods..."
+	podPlaceholder  = "Search..."
 	nsPlaceholder   = "Search namespaces..."
 	kubePlaceholder = "Path to kubeconfig..."
 )
@@ -1212,7 +1212,10 @@ func Draw(s tcell.Screen, m Model) {
 					style = styleChoice
 				}
 			}
-			puts(s, xs[ci], y, g.widths[ci], false, centerText(text, g.widths[ci]), style)
+			if c.key != "name" {
+				text = centerText(text, g.widths[ci])
+			}
+			puts(s, xs[ci], y, g.widths[ci], false, text, style)
 		}
 	}
 

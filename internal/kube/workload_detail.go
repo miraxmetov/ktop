@@ -115,6 +115,7 @@ func (d *Detail) Describe(pods []string, now time.Time) []string {
 		field("namespace", d.Meta.Namespace),
 		field("ready", fmt.Sprintf("%d of %d", d.Ready, d.Desired)),
 		field("created", timestamp(d.Meta.CreationTimestamp.Time, now)),
+		field("QoS class", QOSOf(d.Template)),
 	)
 	if d.Updated > 0 {
 		out = append(out, field("updated", fmt.Sprintf("%d", d.Updated)))
@@ -187,6 +188,7 @@ func (d *Detail) Textual(pods []string, now time.Time) []string {
 	if d.Strategy != "" {
 		out[0] += fmt.Sprintf(" Updates roll out with the %s strategy.", d.Strategy)
 	}
+	out[0] += fmt.Sprintf(" Its pods run with %s quality of service.", QOSOf(d.Template))
 
 	for i := range d.Template.Containers {
 		container := &d.Template.Containers[i]
@@ -203,6 +205,36 @@ func (d *Detail) Textual(pods []string, now time.Time) []string {
 		out = append(out, "", fmt.Sprintf("It currently owns %d pods: %s.", len(pods), strings.Join(pods, ", ")))
 	}
 	return out
+}
+
+func QOSOf(spec corev1.PodSpec) string {
+	if len(spec.Containers) == 0 {
+		return "-"
+	}
+
+	guaranteed, any := true, false
+	for i := range spec.Containers {
+		resources := spec.Containers[i].Resources
+		for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+			limit, hasLimit := resources.Limits[name]
+			request, hasRequest := resources.Requests[name]
+
+			if hasLimit || hasRequest {
+				any = true
+			}
+			if !hasLimit || (hasRequest && limit.Cmp(request) != 0) {
+				guaranteed = false
+			}
+		}
+	}
+
+	switch {
+	case !any:
+		return "BestEffort"
+	case guaranteed:
+		return "Guaranteed"
+	}
+	return "Burstable"
 }
 
 func ownerName(meta metav1.ObjectMeta) string {

@@ -222,7 +222,8 @@ func TestWorkloadDetailReadsInThreeForms(t *testing.T) {
 	described := strings.Join(detail.Describe(pods, now), "\n")
 	for _, want := range []string{
 		"DEPLOYMENT", "name", "api", "ready", "2 of 3", "created", "strategy", "RollingUpdate",
-		"selector", "app=api", "LABELS", "TEMPLATE", "registry.example.com/api:1.4.2",
+		"selector", "app=api", "QoS class", "Burstable", "LABELS", "TEMPLATE",
+		"registry.example.com/api:1.4.2",
 		"limits", "cpu 500m", "PODS", "api-abc-1",
 	} {
 		if !strings.Contains(described, want) {
@@ -234,6 +235,7 @@ func TestWorkloadDetailReadsInThreeForms(t *testing.T) {
 	for _, want := range []string{
 		"Deployment api lives in namespace production", "only 2 of 3 replicas are ready",
 		"RollingUpdate", "limited to cpu 500m", "owns 2 pods",
+		"Burstable quality of service",
 	} {
 		if !strings.Contains(textual, want) {
 			t.Errorf("prose misses %q:\n%s", want, textual)
@@ -262,5 +264,40 @@ func TestWorkloadDetailReportsAMissingObject(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "deployment gone is gone from namespace production") {
 		t.Errorf("message: %v", err)
+	}
+}
+
+func TestTemplateQOS(t *testing.T) {
+	cpu := corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}
+	both := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("1"),
+		corev1.ResourceMemory: resource.MustParse("1Gi"),
+	}
+
+	cases := []struct {
+		name string
+		spec corev1.PodSpec
+		want string
+	}{
+		{"empty", corev1.PodSpec{}, "-"},
+		{"nothing set", corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}}, "BestEffort"},
+		{"one limit", corev1.PodSpec{Containers: []corev1.Container{{
+			Name:      "app",
+			Resources: corev1.ResourceRequirements{Limits: cpu},
+		}}}, "Burstable"},
+		{"limits equal requests", corev1.PodSpec{Containers: []corev1.Container{{
+			Name:      "app",
+			Resources: corev1.ResourceRequirements{Limits: both, Requests: both},
+		}}}, "Guaranteed"},
+		{"one container short", corev1.PodSpec{Containers: []corev1.Container{
+			{Name: "app", Resources: corev1.ResourceRequirements{Limits: both, Requests: both}},
+			{Name: "sidecar"},
+		}}, "Burstable"},
+	}
+
+	for _, c := range cases {
+		if got := QOSOf(c.spec); got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -34,6 +35,7 @@ type Inspection struct {
 	LogQuery  string
 	LogErr    string
 	LogSearch bool
+	LogOffset int
 	LogPods   []string
 	LogPod    string
 	PodPicker bool
@@ -48,6 +50,11 @@ func (i *Inspection) Lines() []string {
 		return i.Yaml
 	}
 	return i.Default
+}
+
+func (i *Inspection) Matches(line LogLine) bool {
+	query := strings.ToLower(strings.TrimSpace(i.LogQuery))
+	return query == "" || strings.Contains(strings.ToLower(line.Text), query)
 }
 
 func (i *Inspection) VisibleLogs() []LogLine {
@@ -74,6 +81,15 @@ const (
 
 func InspectRoom(width, height int) int {
 	return inspectGeom(width, height).room
+}
+
+func MaxLogOffset(m Model, width, height int) int {
+	g := inspectGeomFor(width, height, len(m.Inspect.LogPods))
+	hidden := len(m.Inspect.VisibleLogs()) - g.logRoom
+	if hidden < 0 {
+		return 0
+	}
+	return hidden
 }
 
 func MaxInspectOffset(m Model, width, height int) int {
@@ -229,9 +245,17 @@ func drawInspect(s tcell.Screen, m Model) {
 	puts(s, g.textual.x, g.textual.y, 0, false, textualLabel, pickStyle(styleChoice, m.Inspect.Format == FormatTextual))
 	puts(s, g.yaml.x, g.yaml.y, 0, false, yamlLabel, pickStyle(styleChoice, m.Inspect.Format == FormatYAML))
 
-	footer := "[" + arrowUp + arrowDown + "] scroll   [/] search logs   [Tab] switch format   [Esc] back to the table"
+	footer := "[" + arrowUp + arrowDown + "] logs   [Shift+" + arrowUp + arrowDown + "] config   " +
+		"[/] search logs   [Tab] switch format   [Esc] back to the table"
+	if len(m.Inspect.LogPods) > 1 {
+		footer = "[" + arrowUp + arrowDown + "] logs   [Shift+" + arrowUp + arrowDown + "] config   " +
+			"[/] search   [P] pod   [Tab] format   [Esc] back"
+	}
 	if m.Inspect.LogSearch {
 		footer = "type to filter the stream   [Esc] leave the search"
+	}
+	if m.Inspect.PodPicker {
+		footer = "[" + arrowUp + arrowDown + "] choose the pod   [Enter] stream it   [Esc] keep the current one"
 	}
 	puts(s, max(0, (width-len([]rune(footer)))/2), height-1, 0, false, footer, styleDim)
 	s.Show()
@@ -243,9 +267,21 @@ func logTitle(m Model) string {
 		name = m.Inspect.Pod
 	}
 	if len(m.Inspect.LogPods) > 1 {
-		return "logs of " + name + " " + sortBoth
+		return name + " " + sortBoth
 	}
-	return "logs of " + name
+	return name
+}
+
+func drawLogMarkers(s tcell.Screen, g inspectGeometry, above, below int) {
+	y := g.right.y + g.right.h - 3
+
+	if above > 0 {
+		puts(s, g.right.x+2, y, 0, false, " \u2191"+itoa(above)+" more ", styleDim)
+	}
+	if below > 0 {
+		text := " \u2193" + itoa(below) + " more "
+		puts(s, g.right.x+g.right.w-2-len([]rune(text)), y, 0, false, text, styleDim)
+	}
 }
 
 func drawLogSeparator(s tcell.Screen, g inspectGeometry) {
@@ -300,13 +336,22 @@ func drawLogs(s tcell.Screen, m Model, g inspectGeometry) {
 			}
 			puts(s, x, top, g.logs.w, false, message, styleDim)
 		}
-		start := len(lines) - g.logRoom
+		end := len(lines) - m.Inspect.LogOffset
+		if end > len(lines) {
+			end = len(lines)
+		}
+		if end < 0 {
+			end = 0
+		}
+		start := end - g.logRoom
 		if start < 0 {
 			start = 0
 		}
+		lines = lines[:end]
 		for i := 0; start+i < len(lines) && i < g.logRoom; i++ {
 			putSegments(s, x, top+i, g.logs.w, logSegments(lines[start+i], m.Inspect.LogQuery))
 		}
+		drawLogMarkers(s, g, start, m.Inspect.LogOffset)
 	}
 
 	shown, text, style := m.Inspect.LogQuery, m.Inspect.LogQuery, styleInput
@@ -381,6 +426,22 @@ func fieldSegments(line string) []segment {
 	}
 }
 
+func readyStyle(text string) tcell.Style {
+	var ready, desired int
+	if _, err := fmt.Sscanf(text, "%d of %d", &ready, &desired); err != nil {
+		return styleBase
+	}
+	switch {
+	case desired == 0:
+		return styleDim
+	case ready == 0:
+		return styleBad
+	case ready < desired:
+		return styleWarn
+	}
+	return styleGood
+}
+
 func valueStyle(label, value string) tcell.Style {
 	trimmed := strings.TrimSpace(value)
 
@@ -395,11 +456,17 @@ func valueStyle(label, value string) tcell.Style {
 		if trimmed == "not set" {
 			return styleWarn
 		}
-	case "qos class":
+	case "QoS class":
 		switch trimmed {
 		case "Guaranteed":
 			return styleGood
 		case "BestEffort":
+			return styleWarn
+		}
+	case "ready":
+		return readyStyle(trimmed)
+	case "available", "updated":
+		if trimmed == "0" {
 			return styleWarn
 		}
 	case "Ready", "ContainersReady", "PodScheduled", "Initialized", "PodReadyToStartContainers":
@@ -592,4 +659,17 @@ func HitInspect(m Model, width, height, x, y int) (Target, int) {
 		return HitConfigPane, 0
 	}
 	return HitNone, 0
+}
+
+type InspectLayout struct {
+	ConfigPane Rect
+	LogPane    Rect
+}
+
+func InspectGeometry(m Model, width, height int) InspectLayout {
+	g := inspectGeomFor(width, height, len(m.Inspect.LogPods))
+	return InspectLayout{
+		ConfigPane: Rect{X: g.left.x, Y: g.left.y, W: g.left.w, H: g.left.h},
+		LogPane:    Rect{X: g.right.x, Y: g.right.y, W: g.right.w, H: g.right.h},
+	}
 }

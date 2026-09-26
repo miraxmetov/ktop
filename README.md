@@ -68,7 +68,8 @@ export KUBECONFIG=~/.kube/prod.yaml
 | `Enter` | take the highlighted entry: open that pod's actions, or switch to that namespace |
 | `Esc` | step back: the open question, the open actions, the search field, the filters, then quit |
 | `Ctrl+U` | clear the current search field |
-| `↑` `↓` / `k` `j` | pick from the open list, or scroll the table |
+| `↑` `↓` / `k` `j` | pick from the open list, scroll the table, or scroll the log stream while inspecting |
+| `Shift+↑` `↓` | scroll the configuration pane while inspecting |
 | `PgUp` `PgDn` | scroll a page |
 | `g` `G` / `Home` `End` | jump to the top or the bottom |
 | `r` / `R` | refresh right now, ahead of the interval |
@@ -145,9 +146,12 @@ Restart and Terminate never fire on the first click. The three lines become `Res
 controller brings it back, and immediately for Terminate, which is what a stuck pod needs.
 
 Inspect gives the pod, or the workload, a screen of its own, split into two framed panes: its
-configuration on the left, a live log stream on the right. For a workload the right pane names the
-pod it is streaming and carries a `⇅`: click the title or press `p` to pick another of its pods. Three buttons at the bottom pick how the configuration
-reads: `[ default ]` lists the fields, `[ textual ]` says the same in a few sentences, `[ yaml ]`
+configuration on the left, a live log stream on the right. The right pane is titled with the pod
+it streams; for a workload that title carries a `⇅`, and a click on it or `p` picks another of its
+pods. The two panes scroll apart: the arrows, `PgUp` `PgDn` and `Home` `End` move the stream, the
+same keys with `Shift` move the configuration, and the wheel moves whichever pane it is over. The
+stream follows its tail until you scroll it back, and then holds its place while new lines arrive.
+Three buttons at the bottom pick how the configuration reads: `[ default ]` lists the fields, `[ textual ]` says the same in a few sentences, `[ yaml ]`
 shows the manifest. Each line of the stream carries the time the container printed it, which
 Kubernetes keeps for the lines written before ktop started too. The log pane has its own search
 box fenced off at its bottom edge: press `/` or click it, the stream filters as you type and every
@@ -155,7 +159,9 @@ match is highlighted in place. `Esc` steps back to the table.
 
 All three views colour what usually matters: a broken status or an OOM kill in red, restarts,
 missing limits, a BestEffort class or a false condition in amber, a running container in green,
-while labels, nodes and addresses stay plain so the eye lands on the exception.
+while labels, nodes and addresses stay plain so the eye lands on the exception. A workload reads
+the same way, with its replica count coloured by how many of them are ready and the quality of
+service its pod template asks for spelled out.
 
 ## Counters
 

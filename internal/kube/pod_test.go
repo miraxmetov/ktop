@@ -71,7 +71,7 @@ func TestDescribeReadsLikeProse(t *testing.T) {
 
 	for _, want := range []string{
 		"POD", "name", "api-worker-1", "namespace", "production", "status", "Running (1/1 ready)",
-		"node", "worker-02", "pod ip", "10.42.3.17", "qos class", "Burstable",
+		"node", "worker-02", "pod ip", "10.42.3.17", "QoS class", "Burstable",
 		"owner", "ReplicaSet/api-worker",
 		"LABELS", "app", "release",
 		"ANNOTATIONS", "vault.hashicorp.com/agent-inject",

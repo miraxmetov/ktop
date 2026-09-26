@@ -60,7 +60,7 @@ func Describe(pod *corev1.Pod, now time.Time) []string {
 		field("node", or(pod.Spec.NodeName, "not scheduled")),
 		field("pod ip", or(pod.Status.PodIP, "-")),
 		field("created", timestamp(pod.CreationTimestamp.Time, now)),
-		field("qos class", or(string(pod.Status.QOSClass), "-")),
+		field("QoS class", or(string(pod.Status.QOSClass), "-")),
 		field("service account", or(pod.Spec.ServiceAccountName, "-")),
 		field("restart policy", string(pod.Spec.RestartPolicy)),
 	)

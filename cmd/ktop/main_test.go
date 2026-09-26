@@ -83,6 +83,11 @@ func press(a *app, key tcell.Key, r rune) bool {
 	return quit
 }
 
+func shift(a *app, key tcell.Key) {
+	a.handleKey(tcell.NewEventKey(key, 0, tcell.ModShift))
+	a.clamp()
+}
+
 func typeText(a *app, text string) {
 	for _, r := range text {
 		press(a, tcell.KeyRune, r)
@@ -886,8 +891,8 @@ func TestInspectScrolls(t *testing.T) {
 	a.model.Screen = ui.ScreenInspect
 	a.model.Inspect = ui.Inspection{Pod: "api-1", Default: lines}
 
-	press(a, tcell.KeyDown, 0)
-	press(a, tcell.KeyDown, 0)
+	shift(a, tcell.KeyDown)
+	shift(a, tcell.KeyDown)
 	if a.model.Inspect.Offset != 2 {
 		t.Fatalf("offset after two downs: %d", a.model.Inspect.Offset)
 	}
@@ -897,14 +902,68 @@ func TestInspectScrolls(t *testing.T) {
 		t.Fatalf("the wheel scrolls it too: %d", a.model.Inspect.Offset)
 	}
 
-	press(a, tcell.KeyHome, 0)
+	shift(a, tcell.KeyHome)
 	if a.model.Inspect.Offset != 0 {
 		t.Fatalf("Home rewinds: %d", a.model.Inspect.Offset)
 	}
 
-	press(a, tcell.KeyEnd, 0)
+	shift(a, tcell.KeyEnd)
 	if want := ui.MaxInspectOffset(*a.model, 170, 40); a.model.Inspect.Offset != want {
 		t.Fatalf("End stops at the last page: %d, want %d", a.model.Inspect.Offset, want)
+	}
+
+	press(a, tcell.KeyDown, 0)
+	if a.model.Inspect.Offset != ui.MaxInspectOffset(*a.model, 170, 40) {
+		t.Fatal("a plain arrow must leave the configuration where it is")
+	}
+}
+
+func TestArrowsScrollTheLogStream(t *testing.T) {
+	a := testApp(t, "api-1")
+	a.model.Screen = ui.ScreenInspect
+	a.model.Inspect = ui.Inspection{Pod: "api-1", Default: []string{"POD"}}
+	for i := 0; i < 200; i++ {
+		a.appendLog(ui.LogLine{Time: "18:00:00", Text: fmt.Sprintf("line %d", i)})
+	}
+
+	if a.model.Inspect.LogOffset != 0 {
+		t.Fatal("the stream must follow its tail until it is scrolled")
+	}
+
+	press(a, tcell.KeyUp, 0)
+	press(a, tcell.KeyUp, 0)
+	if a.model.Inspect.LogOffset != 2 {
+		t.Fatalf("two ups must step two lines back: %d", a.model.Inspect.LogOffset)
+	}
+	if a.model.Inspect.Offset != 0 {
+		t.Fatalf("the configuration must stay put: %d", a.model.Inspect.Offset)
+	}
+
+	a.appendLog(ui.LogLine{Time: "18:00:01", Text: "fresh"})
+	if a.model.Inspect.LogOffset != 3 {
+		t.Fatalf("a new line must not drag the scrolled view: %d", a.model.Inspect.LogOffset)
+	}
+
+	press(a, tcell.KeyHome, 0)
+	if want := ui.MaxLogOffset(*a.model, 170, 40); a.model.Inspect.LogOffset != want {
+		t.Fatalf("Home reaches the oldest line: %d, want %d", a.model.Inspect.LogOffset, want)
+	}
+
+	press(a, tcell.KeyEnd, 0)
+	if a.model.Inspect.LogOffset != 0 {
+		t.Fatalf("End returns to the tail: %d", a.model.Inspect.LogOffset)
+	}
+
+	press(a, tcell.KeyUp, 0)
+	g := ui.InspectGeometry(*a.model, 170, 40)
+	a.handleMouse(tcell.NewEventMouse(g.LogPane.X+2, g.LogPane.Y+2, tcell.WheelUp, tcell.ModNone))
+	if a.model.Inspect.LogOffset != 2 {
+		t.Fatalf("the wheel over the stream scrolls the stream: %d", a.model.Inspect.LogOffset)
+	}
+
+	a.handleMouse(tcell.NewEventMouse(g.ConfigPane.X+2, g.ConfigPane.Y+2, tcell.WheelDown, tcell.ModNone))
+	if a.model.Inspect.LogOffset != 2 {
+		t.Fatalf("the wheel over the configuration leaves the stream alone: %d", a.model.Inspect.LogOffset)
 	}
 }
 
@@ -993,13 +1052,13 @@ func TestInspectScrollsWrappedText(t *testing.T) {
 	}
 
 	for i := 0; i < limit+5; i++ {
-		press(a, tcell.KeyDown, 0)
+		shift(a, tcell.KeyDown)
 	}
 	if a.model.Inspect.Offset != limit {
 		t.Fatalf("scrolling must reach the last wrapped line: %d, want %d", a.model.Inspect.Offset, limit)
 	}
 
-	press(a, tcell.KeyHome, 0)
+	shift(a, tcell.KeyHome)
 	if a.model.Inspect.Offset != 0 {
 		t.Fatalf("Home rewinds: %d", a.model.Inspect.Offset)
 	}

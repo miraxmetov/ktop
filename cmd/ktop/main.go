@@ -611,9 +611,9 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 				a.model.Inspect.PodPicker = false
 			}
 		case e.Buttons()&tcell.WheelUp != 0:
-			a.scroll(-1)
+			a.wheelInspect(x, y, -1)
 		case e.Buttons()&tcell.WheelDown != 0:
-			a.scroll(1)
+			a.wheelInspect(x, y, 1)
 		}
 		return
 	}
@@ -790,13 +790,18 @@ func (a *app) handleInspectKey(e *tcell.EventKey) bool {
 			a.model.Inspect.LogSearch = false
 		case tcell.KeyBackspace, tcell.KeyBackspace2, tcell.KeyDelete:
 			a.model.Inspect.LogQuery = trimLast(a.model.Inspect.LogQuery)
+			a.model.Inspect.LogOffset = 0
 		case tcell.KeyCtrlU:
 			a.model.Inspect.LogQuery = ""
+			a.model.Inspect.LogOffset = 0
 		case tcell.KeyRune:
 			a.model.Inspect.LogQuery += string(e.Rune())
+			a.model.Inspect.LogOffset = 0
 		}
 		return false
 	}
+
+	config := e.Modifiers()&tcell.ModShift != 0
 
 	switch e.Key() {
 	case tcell.KeyCtrlC:
@@ -804,17 +809,17 @@ func (a *app) handleInspectKey(e *tcell.EventKey) bool {
 	case tcell.KeyEscape:
 		a.closeInspect()
 	case tcell.KeyUp:
-		a.scroll(-1)
+		a.scrollPane(config, -1)
 	case tcell.KeyDown:
-		a.scroll(1)
+		a.scrollPane(config, 1)
 	case tcell.KeyPgUp:
-		a.scroll(-ui.InspectRoom(width, height))
+		a.scrollPane(config, -ui.InspectRoom(width, height))
 	case tcell.KeyPgDn:
-		a.scroll(ui.InspectRoom(width, height))
+		a.scrollPane(config, ui.InspectRoom(width, height))
 	case tcell.KeyHome:
-		a.jump(0)
+		a.jumpPane(config, true)
 	case tcell.KeyEnd:
-		a.jump(ui.MaxInspectOffset(*a.model, width, height))
+		a.jumpPane(config, false)
 	case tcell.KeyTab, tcell.KeyBacktab:
 		a.toggleFormat()
 	case tcell.KeyRune:
@@ -822,13 +827,13 @@ func (a *app) handleInspectKey(e *tcell.EventKey) bool {
 		case 'q', 'Q':
 			a.closeInspect()
 		case 'k':
-			a.scroll(-1)
+			a.scrollPane(config, -1)
 		case 'j':
-			a.scroll(1)
+			a.scrollPane(config, 1)
 		case 'g':
-			a.jump(0)
+			a.jumpPane(config, true)
 		case 'G':
-			a.jump(ui.MaxInspectOffset(*a.model, width, height))
+			a.jumpPane(config, false)
 		case 'y', 'Y':
 			a.setFormat(ui.FormatYAML)
 		case 'd', 'D':
@@ -970,6 +975,54 @@ func (a *app) scroll(delta int) {
 	a.model.Offset += delta
 }
 
+func (a *app) scrollPane(config bool, delta int) {
+	if config {
+		a.scroll(delta)
+		return
+	}
+	a.scrollLogs(-delta)
+}
+
+func (a *app) scrollLogs(delta int) {
+	a.model.Inspect.LogOffset += delta
+	a.clampLogs()
+}
+
+func (a *app) jumpPane(config, top bool) {
+	width, height := a.screen.Size()
+
+	if config {
+		if top {
+			a.jump(0)
+			return
+		}
+		a.jump(ui.MaxInspectOffset(*a.model, width, height))
+		return
+	}
+	a.model.Inspect.LogOffset = 0
+	if top {
+		a.model.Inspect.LogOffset = ui.MaxLogOffset(*a.model, width, height)
+	}
+}
+
+func (a *app) wheelInspect(x, y, delta int) {
+	width, height := a.screen.Size()
+
+	target, _ := ui.HitInspect(*a.model, width, height, x, y)
+	a.scrollPane(target == ui.HitConfigPane, delta)
+}
+
+func (a *app) clampLogs() {
+	width, height := a.screen.Size()
+
+	if limit := ui.MaxLogOffset(*a.model, width, height); a.model.Inspect.LogOffset > limit {
+		a.model.Inspect.LogOffset = limit
+	}
+	if a.model.Inspect.LogOffset < 0 {
+		a.model.Inspect.LogOffset = 0
+	}
+}
+
 func (a *app) jump(index int) {
 	if a.model.Screen == ui.ScreenInspect {
 		a.model.Inspect.Offset = index
@@ -1083,11 +1136,15 @@ func (a *app) choosePod(index int) {
 	a.model.Inspect.LogPod = name
 	a.model.Inspect.Logs = nil
 	a.model.Inspect.LogErr = ""
+	a.model.Inspect.LogOffset = 0
 	a.followLogs(name, "")
 }
 
 func (a *app) appendLog(line ui.LogLine) {
 	const keep = 2000
+	if a.model.Inspect.LogOffset > 0 && a.model.Inspect.Matches(line) {
+		a.model.Inspect.LogOffset++
+	}
 	a.model.Inspect.Logs = append(a.model.Inspect.Logs, line)
 	if len(a.model.Inspect.Logs) > keep {
 		a.model.Inspect.Logs = a.model.Inspect.Logs[len(a.model.Inspect.Logs)-keep:]

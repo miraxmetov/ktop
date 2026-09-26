@@ -85,7 +85,7 @@ func TestDrawHeaderShowsNamespaceAndSearchBars(t *testing.T) {
 	if !strings.HasPrefix(lines[lineNs], "\u2502 Search namespaces...") {
 		t.Errorf("namespace search line: %q", lines[lineNs])
 	}
-	if !strings.HasPrefix(lines[linePods], "\u2502 Search for pods...") {
+	if !strings.HasPrefix(lines[linePods], "\u2502 Search...") {
 		t.Errorf("pod search line: %q", lines[linePods])
 	}
 	for _, y := range []int{nsBoxTop, podBoxTop} {
@@ -220,7 +220,7 @@ func TestFrameBottomSeparatesSearchFromTable(t *testing.T) {
 func TestDrawInputBoxFormat(t *testing.T) {
 	lines, _ := draw(t, 170, 40, model(sample(3)))
 
-	if !strings.Contains(lines[linePods], "Search for pods...") {
+	if !strings.Contains(lines[linePods], "Search...") {
 		t.Errorf("pod placeholder: %q", lines[linePods])
 	}
 	if !strings.Contains(lines[lineNs], "Search namespaces...") {
@@ -234,7 +234,7 @@ func TestDrawInputBoxFormat(t *testing.T) {
 	if !strings.Contains(typed[linePods], "\u2502 api") {
 		t.Errorf("typed query must replace the placeholder: %q", typed[linePods])
 	}
-	if strings.Contains(typed[linePods], "Search for pods") {
+	if strings.Contains(typed[linePods], podPlaceholder) {
 		t.Errorf("placeholder must disappear once typing starts: %q", typed[linePods])
 	}
 }
@@ -1288,7 +1288,7 @@ func TestInspectHasTwoFramedPanes(t *testing.T) {
 	if strings.Count(top, "┌") != 2 || strings.Count(top, "┐") != 2 {
 		t.Fatalf("two frames must open on the same line: %q", top)
 	}
-	if !strings.Contains(top, "config") || !strings.Contains(top, "logs") {
+	if !strings.Contains(top, "config") || !strings.Contains(top, "api-worker-1") {
 		t.Errorf("the frames must be labelled: %q", top)
 	}
 
@@ -1466,7 +1466,7 @@ func TestConfigColoursWhatMatters(t *testing.T) {
 	m.Inspect.Default = []string{
 		"POD",
 		"  status             CrashLoopBackOff",
-		"  qos class          BestEffort",
+		"  QoS class          BestEffort",
 		"  restarts           4",
 		"  node               worker-02",
 		"",
@@ -1504,6 +1504,66 @@ func TestConfigColoursWhatMatters(t *testing.T) {
 	line, y = row("  node")
 	if fg, _, _ := styleAt(t, screen, line, "node", y).Decompose(); fg != tcell.ColorGray {
 		t.Errorf("labels stay dim, got %v", fg)
+	}
+}
+
+func TestWorkloadConfigColoursWhatMatters(t *testing.T) {
+	m := inspecting()
+	m.Kind = kube.KindDeployment
+	m.Inspect.Default = []string{
+		"DEPLOYMENT",
+		"  name               api",
+		"  ready              2 of 3",
+		"  updated            3",
+		"  QoS class          BestEffort",
+		"  strategy           RollingUpdate",
+		"  selector           app=api",
+	}
+
+	lines, screen := draw(t, 140, 28, m)
+	row := func(needle string) (string, int) {
+		for i, line := range lines {
+			if strings.Contains(line, needle) {
+				return line, i
+			}
+		}
+		t.Fatalf("%q is not on screen", needle)
+		return "", 0
+	}
+
+	line, y := row("  ready")
+	if fg, _, _ := styleAt(t, screen, line, "2 of 3", y).Decompose(); fg != warnColor {
+		t.Errorf("a partly ready workload must stand out, got %v", fg)
+	}
+	line, y = row("BestEffort")
+	if fg, _, _ := styleAt(t, screen, line, "BestEffort", y).Decompose(); fg != warnColor {
+		t.Errorf("BestEffort deserves a warning colour, got %v", fg)
+	}
+	line, y = row("RollingUpdate")
+	if fg, _, _ := styleAt(t, screen, line, "RollingUpdate", y).Decompose(); fg != tcell.ColorDefault {
+		t.Errorf("the strategy stays plain, got %v", fg)
+	}
+	line, y = row("  selector")
+	if fg, _, _ := styleAt(t, screen, line, "selector", y).Decompose(); fg != tcell.ColorGray {
+		t.Errorf("labels stay dim, got %v", fg)
+	}
+}
+
+func TestReadyFieldFollowsTheNumbers(t *testing.T) {
+	cases := []struct {
+		text string
+		want tcell.Color
+	}{
+		{"3 of 3", tcell.ColorGreen},
+		{"1 of 3", warnColor},
+		{"0 of 3", tcell.ColorRed},
+		{"0 of 0", tcell.ColorGray},
+	}
+
+	for _, c := range cases {
+		if fg, _, _ := readyStyle(c.text).Decompose(); fg != c.want {
+			t.Errorf("%q: %v, want %v", c.text, fg, c.want)
+		}
 	}
 }
 
@@ -2010,6 +2070,9 @@ func TestEveryCellIsCentred(t *testing.T) {
 		t.Helper()
 		row := []rune(lines[y])
 		for i, c := range g.cols {
+			if c.key == "name" && y != lineHeader {
+				continue
+			}
 			cell := string(row[xs[i] : xs[i]+g.widths[i]])
 			text := strings.TrimSpace(cell)
 			if text == "" {
@@ -2026,6 +2089,34 @@ func TestEveryCellIsCentred(t *testing.T) {
 
 	centred(lineHeader, "header")
 	centred(rowTop, "row")
+}
+
+func TestNamesRestOnTheLeftEdgeOfTheirColumn(t *testing.T) {
+	for _, kind := range kube.Kinds() {
+		rows := sample(2)
+		rows[0].Name = "api"
+
+		m := model(rows)
+		m.Kind = kind
+		lines, _ := draw(t, 170, 30, m)
+		g := geom(m, 170, 30)
+		xs := columnXs(g.widths)
+
+		index := -1
+		for i, c := range g.cols {
+			if c.key == "name" {
+				index = i
+			}
+		}
+		if index < 0 {
+			t.Fatalf("%s: the table has no name column", kind)
+		}
+
+		cell := []rune(lines[rowTop])[xs[index] : xs[index]+g.widths[index]]
+		if !strings.HasPrefix(string(cell), "api ") {
+			t.Errorf("%s: the name must start at the left edge: %q", kind, string(cell))
+		}
+	}
 }
 
 func TestHeaderKeepsItsArrowWhileCentred(t *testing.T) {
@@ -2155,7 +2246,7 @@ func TestLogPaneNamesItsPod(t *testing.T) {
 	m.Inspect.LogPods = []string{"api-abc-1", "api-abc-2"}
 
 	lines, _ := draw(t, 140, 28, m)
-	if !strings.Contains(lines[inspectTop], "logs of api-abc-1") {
+	if !strings.Contains(lines[inspectTop], "api-abc-1 \u21c5") {
 		t.Errorf("the pane must name the pod it streams: %q", lines[inspectTop])
 	}
 	if !strings.Contains(lines[inspectTop], sortBoth) {

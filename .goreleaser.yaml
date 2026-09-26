@@ -35,6 +35,33 @@ archives:
       - src: completions/*
         dst: completions
 
+homebrew_casks:
+  - name: ktop
+    binaries:
+      - ktop
+    repository:
+      owner: miraxmetov
+      name: homebrew-tap
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+    directory: Casks
+    skip_upload: '{{ if envOrDefault "HOMEBREW_TAP_TOKEN" "" }}false{{ else }}true{{ end }}'
+    homepage: https://github.com/miraxmetov/ktop
+    description: A terminal window into one Kubernetes namespace
+    license: mit
+    commit_author:
+      name: miraxmetov
+      email: t.miraxmetov@proximaops.io
+    completions:
+      bash: completions/ktop.bash
+      zsh: completions/_ktop
+      fish: completions/ktop.fish
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/ktop"]
+          end
+
 checksum:
   name_template: checksums.txt
 

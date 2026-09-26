@@ -15,8 +15,12 @@ credential plugins such as `gke-gcloud-auth-plugin`.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/miraxmetov/ktop/main/install.sh | sh
+brew install miraxmetov/tap/ktop                                                   # macOS
+curl -fsSL https://raw.githubusercontent.com/miraxmetov/ktop/main/install.sh | sh  # anywhere
 ```
+
+Homebrew keeps ktop up to date with everything else you have installed; `brew upgrade ktop` and
+`brew uninstall ktop` work as usual.
 
 The script detects your platform (macOS and Linux, amd64 and arm64), downloads the matching
 release, verifies its SHA256 against `checksums.txt`, installs the binary into `~/.local/bin` and

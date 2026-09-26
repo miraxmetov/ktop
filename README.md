@@ -116,6 +116,10 @@ the pod declares that limit: comparing the whole pod's usage against one sidecar
 a number without meaning. Usage columns need metrics-server in the cluster; without it they show
 `-` and the rest still works.
 
+When the table has nothing to show, a small framed note rests in the middle of it: `Oops!` over
+`No resources found in this namespace.`, or, while a filter or a search is on, the reason that
+nothing came through.
+
 The table fills whatever terminal it is given: the pod column takes the space the other columns
 leave, and the row count follows the window height. Narrow windows drop the rightmost columns
 instead of wrapping. A pod name too long for its column scrolls inside it once you click that pod:

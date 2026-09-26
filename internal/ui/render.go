@@ -983,6 +983,71 @@ func drawActions(s tcell.Screen, m Model, g geometry, y, line int) {
 	}
 }
 
+func emptyNote(m Model) []string {
+	switch {
+	case m.Err != "":
+		return nil
+	case !m.Loaded:
+		return []string{"Asking the cluster for " + kindWord(m.Kind) + "..."}
+	case m.Level != kube.LevelAll && len(m.All) > 0:
+		return []string{oops, emptyLevelText(m.Kind, m.Level, m.Dimension)}
+	case m.PodQuery != "" && len(m.All) > 0:
+		return []string{oops, "No " + kindNoun(m.Kind) + " matches " + m.PodQuery + "."}
+	}
+	return []string{oops, "No resources found in this namespace."}
+}
+
+func drawEmptyNote(s tcell.Screen, m Model, g geometry, height int) {
+	lines := emptyNote(m)
+	if len(lines) == 0 {
+		return
+	}
+
+	inner := 0
+	for _, line := range lines {
+		if w := len([]rune(line)); w > inner {
+			inner = w
+		}
+	}
+	inner += 6
+	if inner > g.total-2 {
+		inner = g.total - 2
+	}
+
+	box := rect{
+		x: max(0, (g.total-inner)/2),
+		y: rowTop + max(0, (g.room-len(lines)-2)/2),
+		w: inner,
+		h: len(lines) + 2,
+	}
+	if box.y+box.h > height-3 {
+		box.y = max(rowTop, height-3-box.h)
+	}
+
+	for y := box.y; y < box.y+box.h; y++ {
+		puts(s, box.x, y, box.w, false, "", styleBase)
+	}
+	drawBox(s, box, false)
+
+	for i, line := range lines {
+		style := styleDim
+		if line == oops {
+			style = styleWarn.Bold(true)
+		}
+		puts(s, box.x+1, box.y+1+i, box.w-2, false, centerText(line, box.w-2), style)
+	}
+}
+
+func kindWord(kind kube.Kind) string {
+	return strings.ToLower(kind.String())
+}
+
+func kindNoun(kind kube.Kind) string {
+	return strings.TrimSuffix(kindWord(kind), "s")
+}
+
+const oops = "Oops!"
+
 func drawTableFrame(s tcell.Screen, g geometry, height int) {
 	bottom := height - 3
 	dividers := g.dividers()
@@ -1175,18 +1240,7 @@ func Draw(s tcell.Screen, m Model) {
 	}
 
 	if len(m.Rows) == 0 {
-		empty := "no pods in this namespace"
-		switch {
-		case m.Err != "":
-			empty = ""
-		case !m.Loaded:
-			empty = "asking the cluster for pods..."
-		case m.Level != kube.LevelAll && len(m.All) > 0:
-			empty = emptyLevelText(m.Level, m.Dimension)
-		case m.PodQuery != "" && len(m.All) > 0:
-			empty = "no pod matches " + m.PodQuery
-		}
-		puts(s, 2, rowTop, 0, false, empty, styleDim)
+		drawEmptyNote(s, m, g, height)
 	}
 
 	for i, sl := range visibleSlots(m, offset, g.room) {
@@ -1298,20 +1352,22 @@ func pickStyle(base tcell.Style, active bool) tcell.Style {
 	return base
 }
 
-func emptyLevelText(level kube.Level, dimension kube.Dimension) string {
+func emptyLevelText(kind kube.Kind, level kube.Level, dimension kube.Dimension) string {
 	what := "critical"
 	if level == kube.LevelWarning {
 		what = "warning"
 	}
+	noun := kindNoun(kind)
+
 	switch dimension {
 	case kube.DimStatus:
-		return "no pod is " + what + " by status"
+		return "No " + noun + " is " + what + " by status."
 	case kube.DimCPU:
-		return "no pod is " + what + " by cpu"
+		return "No " + noun + " is " + what + " by cpu."
 	case kube.DimMemory:
-		return "no pod is " + what + " by memory"
+		return "No " + noun + " is " + what + " by memory."
 	}
-	return "no pod is " + what + " by cpu or memory"
+	return "No " + noun + " is " + what + " by cpu or memory."
 }
 
 const marqueePause = 6

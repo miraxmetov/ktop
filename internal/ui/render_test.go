@@ -178,8 +178,8 @@ func TestDrawFilterWithoutMatches(t *testing.T) {
 	ApplyFilter(&m)
 
 	lines, _ := draw(t, 170, 40, m)
-	if !strings.Contains(lines[rowTop], "no pod matches nothing-matches") {
-		t.Errorf("empty state: %q", lines[rowTop])
+	if !strings.Contains(strings.Join(lines, "\n"), "No pod matches nothing-matches.") {
+		t.Errorf("empty state: %q", strings.Join(lines[rowTop:rowTop+8], "\n"))
 	}
 }
 
@@ -399,8 +399,8 @@ func TestDrawErrorAndNote(t *testing.T) {
 
 func TestDrawEmptyNamespace(t *testing.T) {
 	lines, _ := draw(t, 120, 20, model(nil))
-	if !strings.Contains(lines[rowTop], "no pods in this namespace") {
-		t.Errorf("empty state: %q", lines[rowTop])
+	if !strings.Contains(strings.Join(lines, "\n"), "No resources found in this namespace.") {
+		t.Errorf("empty state: %q", strings.Join(lines[rowTop:rowTop+6], "\n"))
 	}
 	if !strings.Contains(lines[lineStatus], "0 critical") {
 		t.Errorf("counters with no rows: %q", lines[lineStatus])
@@ -892,8 +892,8 @@ func TestEmptyLevelFilterExplainsItself(t *testing.T) {
 	ApplyFilter(&m)
 
 	lines, _ := draw(t, 170, 30, m)
-	if !strings.Contains(lines[rowTop], "no pod is critical by cpu or memory") {
-		t.Errorf("empty state: %q", lines[rowTop])
+	if !strings.Contains(strings.Join(lines, "\n"), "No pod is critical by cpu or memory.") {
+		t.Errorf("empty state: %q", strings.Join(lines[rowTop:rowTop+8], "\n"))
 	}
 }
 
@@ -986,9 +986,9 @@ func TestEmptyStateNamesTheDimension(t *testing.T) {
 		dimension kube.Dimension
 		want      string
 	}{
-		{kube.DimStatus, "no pod is critical by status"},
-		{kube.DimCPU, "no pod is critical by cpu"},
-		{kube.DimMemory, "no pod is critical by memory"},
+		{kube.DimStatus, "No pod is critical by status."},
+		{kube.DimCPU, "No pod is critical by cpu."},
+		{kube.DimMemory, "No pod is critical by memory."},
 	} {
 		m := model(rows)
 		m.Dimension = c.dimension
@@ -996,8 +996,8 @@ func TestEmptyStateNamesTheDimension(t *testing.T) {
 		ApplyFilter(&m)
 
 		lines, _ := draw(t, 170, 30, m)
-		if !strings.Contains(lines[rowTop], c.want) {
-			t.Errorf("empty state: %q, want %q", lines[rowTop], c.want)
+		if !strings.Contains(strings.Join(lines, "\n"), c.want) {
+			t.Errorf("empty state: %q, want %q", strings.Join(lines[rowTop:rowTop+8], "\n"), c.want)
 		}
 	}
 }
@@ -2370,4 +2370,66 @@ func TestKindBoxKeepsItsWidthWhateverIsChosen(t *testing.T) {
 	if g.dropdown.x != g.kindBox.x {
 		t.Errorf("the menu must hang under the box: %d against %d", g.dropdown.x, g.kindBox.x)
 	}
+}
+
+func TestEmptyTableHoldsANoteAboveIt(t *testing.T) {
+	m := model(nil)
+	m.Kind = kube.KindDeployment
+
+	lines, _ := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+
+	top := -1
+	for i := rowTop; i < rowTop+g.room; i++ {
+		if strings.Contains(lines[i], "Oops!") {
+			top = i
+			break
+		}
+	}
+	if top < 0 {
+		t.Fatalf("the note must float inside the table:\n%s", strings.Join(lines[rowTop:rowTop+g.room], "\n"))
+	}
+	if !strings.Contains(lines[top+1], "No resources found in this namespace.") {
+		t.Errorf("the second line: %q", lines[top+1])
+	}
+
+	frame := []rune(lines[top-1])
+	if !strings.Contains(string(frame), "┌") || !strings.Contains(lines[top+2], "└") {
+		t.Errorf("the note must be framed:\n%q\n%q", lines[top-1], lines[top+2])
+	}
+
+	left := strings.Index(lines[top-1], "┌")
+	if column := strings.Index(lines[top-1], "│"); column >= 0 && column > left {
+		t.Errorf("the frame must cover the column dividers: %q", lines[top-1])
+	}
+
+	middle := rowTop + g.room/2
+	if top < middle-3 || top > middle+1 {
+		t.Errorf("the note must rest in the middle of the table: row %d of %d..%d", top, rowTop, rowTop+g.room)
+	}
+}
+
+func TestEmptyNoteSpeaksOfTheChosenKind(t *testing.T) {
+	m := model(sample(3))
+	m.Kind = kube.KindStatefulSet
+	m.PodQuery = "nothing-matches"
+	ApplyFilter(&m)
+
+	body := strings.Join(mustDraw(t, m), "\n")
+	if !strings.Contains(body, "No statefulset matches nothing-matches.") {
+		t.Errorf("the note must name the kind: %s", body)
+	}
+
+	m = model(nil)
+	m.Kind = kube.KindDaemonSet
+	m.Loaded = false
+	if body := strings.Join(mustDraw(t, m), "\n"); !strings.Contains(body, "Asking the cluster for daemonsets...") {
+		t.Errorf("the wait must name the kind: %s", body)
+	}
+}
+
+func mustDraw(t *testing.T, m Model) []string {
+	t.Helper()
+	lines, _ := draw(t, 170, 30, m)
+	return lines[rowTop : rowTop+geom(m, 170, 30).room]
 }

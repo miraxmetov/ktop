@@ -361,13 +361,13 @@ func click(a *app, x, y int) {
 func TestClickFocusesSearchFields(t *testing.T) {
 	a := testApp(t, "api-1", "web-1")
 
-	click(a, 3, 2)
+	click(a, 3, 3)
 	if a.model.Focus != ui.FocusNamespace {
 		t.Fatalf("click on the namespace box: focus %v", a.model.Focus)
 	}
 
 	press(a, tcell.KeyEscape, 0)
-	click(a, 3, 8)
+	click(a, 3, 9)
 	if a.model.Focus != ui.FocusPods {
 		t.Fatalf("click on the pod box: focus %v", a.model.Focus)
 	}
@@ -377,8 +377,8 @@ func TestClickOnDropdownSwitchesNamespace(t *testing.T) {
 	a := testApp(t, "api-1")
 	a.model.Namespaces = []string{"default", "production", "staging"}
 
-	click(a, 3, 3)
-	click(a, 3, 8)
+	click(a, 3, 4)
+	click(a, 3, 9)
 
 	if a.namespace != "staging" {
 		t.Fatalf("clicking the third item must switch to staging, got %q", a.namespace)
@@ -487,11 +487,11 @@ func TestKubeconfigFieldOpensOnKeyAndClick(t *testing.T) {
 	}
 
 	lines := frame(t, a)
-	column := strings.Index(lines[1], "/home")
+	column := strings.Index(lines[2], "/home")
 	if column < 0 {
-		t.Fatalf("path not drawn: %q", lines[1])
+		t.Fatalf("path not drawn: %q", lines[2])
 	}
-	click(a, column+2, 1)
+	click(a, column+2, 2)
 	if a.model.Focus != ui.FocusKubeconfig {
 		t.Fatalf("a click on the path must open the field, got %v", a.model.Focus)
 	}
@@ -766,17 +766,17 @@ func TestEscapeClearsDimensionAndLevel(t *testing.T) {
 func TestClickOnTheNameOpensTheActions(t *testing.T) {
 	a := testApp(t, "api-1", "api-2", "web-1")
 
-	click(a, 4, 12)
+	click(a, 4, 14)
 	if a.model.Expanded != "api-1" {
 		t.Fatalf("a click on the name opens its actions, got %q", a.model.Expanded)
 	}
 
-	click(a, 4, 12)
+	click(a, 4, 14)
 	if a.model.Expanded != "" {
 		t.Fatalf("a second click closes them, got %q", a.model.Expanded)
 	}
 
-	click(a, 4, 12)
+	click(a, 4, 14)
 	press(a, tcell.KeyEscape, 0)
 	if a.model.Expanded != "" {
 		t.Fatalf("Esc closes them too, got %q", a.model.Expanded)
@@ -785,20 +785,14 @@ func TestClickOnTheNameOpensTheActions(t *testing.T) {
 
 func TestDestructiveButtonsOnlyAsk(t *testing.T) {
 	a := testApp(t, "api-1", "web-1")
-	click(a, 4, 12)
+	click(a, 4, 14)
 
-	lines := frame(t, a)
-	actions := lines[13]
-
-	restart := strings.Index(actions, "[ Restart ]") + 2
-	click(a, restart, 13)
+	click(a, 4, 16)
 	if a.model.Confirm != ui.ActionRestart {
 		t.Fatalf("Restart must only ask first, got %v", a.model.Confirm)
 	}
 
-	lines = frame(t, a)
-	cancel := strings.Index(lines[13], "[ Cancel ]") + 2
-	click(a, cancel, 13)
+	click(a, 4, 17)
 	if a.model.Confirm != ui.ActionNone {
 		t.Fatalf("Cancel must take the question back, got %v", a.model.Confirm)
 	}
@@ -806,9 +800,7 @@ func TestDestructiveButtonsOnlyAsk(t *testing.T) {
 		t.Fatalf("the actions stay open after cancelling, got %q", a.model.Expanded)
 	}
 
-	lines = frame(t, a)
-	terminate := strings.Index(lines[13], "[ Terminate ]") + 2
-	click(a, terminate, 13)
+	click(a, 4, 17)
 	if a.model.Confirm != ui.ActionTerminate {
 		t.Fatalf("Terminate must only ask first, got %v", a.model.Confirm)
 	}
@@ -820,11 +812,9 @@ func TestDestructiveButtonsOnlyAsk(t *testing.T) {
 
 func TestInspectOpensItsOwnScreen(t *testing.T) {
 	a := testApp(t, "api-1", "web-1")
-	click(a, 4, 12)
+	click(a, 4, 14)
 
-	lines := frame(t, a)
-	inspect := strings.Index(lines[13], "[ Inspect ]") + 2
-	click(a, inspect, 13)
+	click(a, 4, 15)
 
 	if a.model.Screen != ui.ScreenInspect {
 		t.Fatalf("Inspect must switch screens, got %v", a.model.Screen)
@@ -913,9 +903,8 @@ func TestInspectScrolls(t *testing.T) {
 	}
 
 	press(a, tcell.KeyEnd, 0)
-	room := ui.InspectRoom(40)
-	if a.model.Inspect.Offset != len(lines)-room {
-		t.Fatalf("End stops at the last page: %d", a.model.Inspect.Offset)
+	if want := ui.MaxInspectOffset(*a.model, 170, 40); a.model.Inspect.Offset != want {
+		t.Fatalf("End stops at the last page: %d, want %d", a.model.Inspect.Offset, want)
 	}
 }
 
@@ -982,5 +971,185 @@ func TestLogStreamIsKeptShort(t *testing.T) {
 	}
 	if last := a.model.Inspect.Logs[len(a.model.Inspect.Logs)-1]; last.Text != "line 2499" {
 		t.Errorf("the newest line must survive, got %q", last.Text)
+	}
+}
+
+func TestInspectScrollsWrappedText(t *testing.T) {
+	long := make([]string, 0, 40)
+	for i := 0; i < 40; i++ {
+		long = append(long, fmt.Sprintf("  field %02d          %s", i, strings.Repeat("value ", 12)))
+	}
+
+	a := testApp(t, "api-1")
+	a.model.Screen = ui.ScreenInspect
+	a.model.Inspect = ui.Inspection{Pod: "api-1", Default: long}
+
+	limit := ui.MaxInspectOffset(*a.model, 170, 40)
+	if limit == 0 {
+		t.Fatal("wrapped text must be scrollable")
+	}
+	if limit <= len(long)-ui.InspectRoom(170, 40) {
+		t.Fatalf("the limit must count wrapped lines, got %d for %d source lines", limit, len(long))
+	}
+
+	for i := 0; i < limit+5; i++ {
+		press(a, tcell.KeyDown, 0)
+	}
+	if a.model.Inspect.Offset != limit {
+		t.Fatalf("scrolling must reach the last wrapped line: %d, want %d", a.model.Inspect.Offset, limit)
+	}
+
+	press(a, tcell.KeyHome, 0)
+	if a.model.Inspect.Offset != 0 {
+		t.Fatalf("Home rewinds: %d", a.model.Inspect.Offset)
+	}
+}
+
+func TestClickingAColumnCyclesTheSort(t *testing.T) {
+	a := testApp(t, "api-1", "api-2", "web-1")
+	a.model.All[0].CPU, a.model.All[1].CPU, a.model.All[2].CPU = 100, 900, 500
+	for i := range a.model.All {
+		a.model.All[i].HasCPU = true
+	}
+	ui.ApplyFilter(a.model)
+
+	g := ui.Geometry(*a.model, 170, 40)
+	column := g.Columns["cpu"]
+	if column.W == 0 {
+		t.Fatal("the cpu column is not on screen")
+	}
+
+	click(a, column.X+1, column.Y)
+	if a.model.SortKey != "cpu" || a.model.SortOrder != kube.OrderDesc {
+		t.Fatalf("first click sorts from the largest: %q %v", a.model.SortKey, a.model.SortOrder)
+	}
+	if a.model.Rows[0].CPU != 900 {
+		t.Fatalf("rows must follow: %v", a.model.Rows[0])
+	}
+
+	click(a, column.X+1, column.Y)
+	if a.model.SortOrder != kube.OrderAsc || a.model.Rows[0].CPU != 100 {
+		t.Fatalf("second click flips it: %v, first row %v", a.model.SortOrder, a.model.Rows[0].CPU)
+	}
+
+	click(a, column.X+1, column.Y)
+	if a.model.SortKey != "" || a.model.SortOrder != kube.OrderNone {
+		t.Fatalf("third click drops it: %q %v", a.model.SortKey, a.model.SortOrder)
+	}
+}
+
+func TestSortingMovesBetweenColumns(t *testing.T) {
+	a := testApp(t, "api-1", "api-2")
+	ui.ApplyFilter(a.model)
+
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.Columns["cpu"].X+1, g.Columns["cpu"].Y)
+	if a.model.SortKey != "cpu" {
+		t.Fatalf("sort key: %q", a.model.SortKey)
+	}
+
+	click(a, g.Columns["restarts"].X+1, g.Columns["restarts"].Y)
+	if a.model.SortKey != "restarts" || a.model.SortOrder != kube.OrderDesc {
+		t.Fatalf("another column takes over from the largest: %q %v", a.model.SortKey, a.model.SortOrder)
+	}
+}
+
+func TestSortingSurvivesRefresh(t *testing.T) {
+	a := testApp(t, "api-1", "api-2")
+	a.model.SortKey, a.model.SortOrder = "restarts", kube.OrderDesc
+
+	a.model.All = []kube.Row{
+		{Name: "api-3", Restarts: 2, CPUPct: -1, MemPct: -1, Worst: -1},
+		{Name: "api-4", Restarts: 9, CPUPct: -1, MemPct: -1, Worst: -1},
+	}
+	a.reselect()
+
+	if a.model.Rows[0].Name != "api-4" {
+		t.Fatalf("fresh rows must arrive sorted: %v", a.model.Rows)
+	}
+}
+
+func TestClickingPodHeaderFlipsTheAlphabet(t *testing.T) {
+	a := testApp(t, "api-1", "web-1", "api-2")
+	a.model.NameOrder = kube.OrderAsc
+	ui.ApplyFilter(a.model)
+
+	if a.model.Rows[0].Name != "api-1" {
+		t.Fatalf("default order: %v", a.model.Rows[0].Name)
+	}
+
+	g := ui.Geometry(*a.model, 170, 40)
+	pod := g.Columns["name"]
+	click(a, pod.X+1, pod.Y)
+
+	if a.model.NameOrder != kube.OrderDesc {
+		t.Fatalf("the click must flip the alphabet, got %v", a.model.NameOrder)
+	}
+	if a.model.Rows[0].Name != "web-1" {
+		t.Fatalf("rows must follow: %v", a.model.Rows[0].Name)
+	}
+
+	click(a, pod.X+1, pod.Y)
+	if a.model.NameOrder != kube.OrderAsc || a.model.Rows[0].Name != "api-1" {
+		t.Fatalf("a second click brings it back: %v %q", a.model.NameOrder, a.model.Rows[0].Name)
+	}
+}
+
+func TestNameOrderAndColumnSortLiveApart(t *testing.T) {
+	a := testApp(t, "api-1", "web-1", "api-2")
+	cpu := map[string]float64{"api-1": 100, "api-2": 100, "web-1": 300}
+	for i := range a.model.All {
+		a.model.All[i].HasCPU = true
+		a.model.All[i].CPU = cpu[a.model.All[i].Name]
+	}
+	a.model.NameOrder = kube.OrderAsc
+	ui.ApplyFilter(a.model)
+
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.Columns["name"].X+1, g.Columns["name"].Y)
+	click(a, g.Columns["cpu"].X+1, g.Columns["cpu"].Y)
+
+	if a.model.SortKey != "cpu" || a.model.SortOrder != kube.OrderDesc {
+		t.Fatalf("the column sort: %q %v", a.model.SortKey, a.model.SortOrder)
+	}
+	if a.model.NameOrder != kube.OrderDesc {
+		t.Fatalf("the name order must survive: %v", a.model.NameOrder)
+	}
+	if a.model.Rows[0].Name != "web-1" || a.model.Rows[1].Name != "api-2" {
+		t.Fatalf("cpu decides first, the reversed alphabet breaks the tie: %v", a.model.Rows)
+	}
+
+	click(a, g.Columns["name"].X+1, g.Columns["name"].Y)
+	if a.model.SortKey != "" || a.model.NameOrder != kube.OrderDesc {
+		t.Fatalf("a click on POD drops the column sort and keeps the name order: %q %v",
+			a.model.SortKey, a.model.NameOrder)
+	}
+	if a.model.Rows[0].Name != "web-1" {
+		t.Fatalf("back to names alone, reversed: %v", a.model.Rows[0].Name)
+	}
+}
+
+func TestPodHeaderReturnsToTheAlphabet(t *testing.T) {
+	a := testApp(t, "api-1", "web-1")
+	a.model.NameOrder = kube.OrderAsc
+	ui.ApplyFilter(a.model)
+
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.Columns["restarts"].X+1, g.Columns["restarts"].Y)
+	if a.model.SortKey != "restarts" {
+		t.Fatalf("sorted by: %q", a.model.SortKey)
+	}
+
+	click(a, g.Columns["name"].X+1, g.Columns["name"].Y)
+	if a.model.SortKey != "" || a.model.SortOrder != kube.OrderNone {
+		t.Fatalf("POD must take the table back: %q %v", a.model.SortKey, a.model.SortOrder)
+	}
+	if a.model.NameOrder != kube.OrderAsc {
+		t.Fatalf("and leave the alphabet as it was: %v", a.model.NameOrder)
+	}
+
+	click(a, g.Columns["name"].X+1, g.Columns["name"].Y)
+	if a.model.NameOrder != kube.OrderDesc {
+		t.Fatalf("the next click flips it: %v", a.model.NameOrder)
 	}
 }

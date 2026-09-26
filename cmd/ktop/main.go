@@ -187,6 +187,7 @@ func main() {
 			Context:    client.Context,
 			Kubeconfig: client.Kubeconfig,
 			Started:    time.Now(),
+			NameOrder:  kube.OrderAsc,
 		},
 	}
 
@@ -247,12 +248,24 @@ func (a *app) run() {
 	defer ticker.Stop()
 	clock := time.NewTicker(time.Second)
 	defer clock.Stop()
+	marquee := time.NewTicker(120 * time.Millisecond)
+	defer marquee.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
 			a.fetchPods()
 		case <-clock.C:
+			a.draw()
+		case <-marquee.C:
+			if a.model.Screen != ui.ScreenTable {
+				continue
+			}
+			width, height := a.screen.Size()
+			if !ui.NeedsMarquee(*a.model, width, height) {
+				continue
+			}
+			a.model.Tick++
 			a.draw()
 		case res := <-a.pods:
 			if res.namespace != a.namespace {
@@ -581,6 +594,8 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 			a.applyChoice()
 		case ui.HitPodName:
 			a.toggleActions(index)
+		case ui.HitColumn:
+			a.sortByColumn(index)
 		case ui.HitActionInspect:
 			a.openInspect(index)
 		case ui.HitActionRestart:
@@ -690,7 +705,7 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 }
 
 func (a *app) handleInspectKey(e *tcell.EventKey) bool {
-	_, height := a.screen.Size()
+	width, height := a.screen.Size()
 
 	if a.model.Inspect.LogSearch {
 		switch e.Key() {
@@ -718,13 +733,13 @@ func (a *app) handleInspectKey(e *tcell.EventKey) bool {
 	case tcell.KeyDown:
 		a.scroll(1)
 	case tcell.KeyPgUp:
-		a.scroll(-ui.InspectRoom(height))
+		a.scroll(-ui.InspectRoom(width, height))
 	case tcell.KeyPgDn:
-		a.scroll(ui.InspectRoom(height))
+		a.scroll(ui.InspectRoom(width, height))
 	case tcell.KeyHome:
 		a.jump(0)
 	case tcell.KeyEnd:
-		a.jump(len(a.model.Inspect.Lines()))
+		a.jump(ui.MaxInspectOffset(*a.model, width, height))
 	case tcell.KeyTab, tcell.KeyBacktab:
 		a.toggleFormat()
 	case tcell.KeyRune:
@@ -738,7 +753,7 @@ func (a *app) handleInspectKey(e *tcell.EventKey) bool {
 		case 'g':
 			a.jump(0)
 		case 'G':
-			a.jump(len(a.model.Inspect.Lines()))
+			a.jump(ui.MaxInspectOffset(*a.model, width, height))
 		case 'y', 'Y':
 			a.setFormat(ui.FormatYAML)
 		case 'd', 'D':
@@ -870,16 +885,47 @@ func (a *app) jump(index int) {
 }
 
 func (a *app) clampInspect() {
-	_, height := a.screen.Size()
-	room := ui.InspectRoom(height)
-	lines := len(a.model.Inspect.Lines())
+	width, height := a.screen.Size()
 
-	if a.model.Inspect.Offset > lines-room {
-		a.model.Inspect.Offset = lines - room
+	if limit := ui.MaxInspectOffset(*a.model, width, height); a.model.Inspect.Offset > limit {
+		a.model.Inspect.Offset = limit
 	}
 	if a.model.Inspect.Offset < 0 {
 		a.model.Inspect.Offset = 0
 	}
+}
+
+func (a *app) sortByColumn(index int) {
+	width, height := a.screen.Size()
+	key := ui.ColumnKeyAt(*a.model, width, height, index)
+	if key == "" {
+		return
+	}
+
+	if key == "name" {
+		switch {
+		case a.model.SortKey != "" && a.model.SortOrder != kube.OrderNone:
+			a.model.SortKey, a.model.SortOrder = "", kube.OrderNone
+		case a.model.NameOrder == kube.OrderDesc:
+			a.model.NameOrder = kube.OrderAsc
+		default:
+			a.model.NameOrder = kube.OrderDesc
+		}
+		a.model.Offset = 0
+		a.reselect()
+		return
+	}
+
+	if a.model.SortKey != key {
+		a.model.SortKey, a.model.SortOrder = key, kube.OrderDesc
+	} else {
+		a.model.SortOrder = ui.NextOrder(a.model.SortOrder)
+		if a.model.SortOrder == kube.OrderNone {
+			a.model.SortKey = ""
+		}
+	}
+	a.model.Offset = 0
+	a.reselect()
 }
 
 func (a *app) toggleActions(index int) {
@@ -895,6 +941,7 @@ func (a *app) toggleActions(index int) {
 		return
 	}
 	a.model.Expanded = name
+	a.model.Tick = 0
 }
 
 func (a *app) openInspect(index int) {

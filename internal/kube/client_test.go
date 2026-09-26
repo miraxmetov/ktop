@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,9 +150,6 @@ func TestRowsPercentagesAndFlags(t *testing.T) {
 	if got := byName["nolimit"]; got.CPUPct != -1 || got.MemPct != -1 || !got.HasCPU {
 		t.Errorf("nolimit: want usage without percentages, got %+v", got)
 	}
-	if got := byName["web"]; got.Problem {
-		t.Error("web: healthy pod must not be flagged")
-	}
 	if got := byName["broken"]; got.Status != "CrashLoopBackOff" || got.Severity != Bad {
 		t.Errorf("broken: got %q severity %v", got.Status, got.Severity)
 	}
@@ -161,25 +159,18 @@ func TestRowsPercentagesAndFlags(t *testing.T) {
 	if got := byName["dying"]; got.Status != "Terminating" {
 		t.Errorf("dying: got %q", got.Status)
 	}
-	if got := byName["job"]; got.Status != "Completed" || got.Problem {
-		t.Errorf("job: got %q problem=%v", got.Status, got.Problem)
+	if got := byName["job"]; got.Status != "Completed" {
+		t.Errorf("job: got %q", got.Status)
 	}
 }
 
-func TestRowsSortProblemsFirst(t *testing.T) {
+func TestRowsComeBackInAlphabeticalOrder(t *testing.T) {
 	rows := testRows(t)
-	seenHealthy := false
-	for _, r := range rows {
-		if !r.Problem {
-			seenHealthy = true
-			continue
+
+	for i := 1; i < len(rows); i++ {
+		if rows[i-1].Name > rows[i].Name {
+			t.Fatalf("%q must come before %q", rows[i].Name, rows[i-1].Name)
 		}
-		if seenHealthy {
-			t.Fatalf("problem pod %q sorted after a healthy pod", r.Name)
-		}
-	}
-	if rows[0].Name != "api" {
-		t.Errorf("hottest problem pod first: want api, got %q", rows[0].Name)
 	}
 }
 
@@ -293,35 +284,133 @@ func TestCountAndFilterFollowTheDimension(t *testing.T) {
 	}
 }
 
-func TestSortIsStableWhileValuesDrift(t *testing.T) {
+func TestSortKeepsNameGroupsTogether(t *testing.T) {
 	rows := []Row{
-		{Name: "b", Problem: true, CPUPct: 96, Worst: 96},
-		{Name: "a", Problem: true, CPUPct: 91, Worst: 91},
-		{Name: "d", Problem: true, CPUPct: 80, Worst: 80},
-		{Name: "c", Problem: false, CPUPct: 10, Worst: 10},
+		{Name: "web-7d4f8c6b9-p8lqm", CPUPct: 96, Worst: 96},
+		{Name: "api-worker-5f7c9d8b4-xk2vn", CPUPct: 10, Worst: 10},
+		{Name: "api-gateway-6b8d7c9f5-2mkqp", CPUPct: 91, Worst: 91},
+		{Name: "api-worker-5f7c9d8b4-aaaaa", CPUPct: 80, Worst: 80},
 	}
 	Sort(rows)
-	first := []string{rows[0].Name, rows[1].Name, rows[2].Name, rows[3].Name}
-	want := []string{"a", "b", "d", "c"}
-	for i := range want {
-		if first[i] != want[i] {
-			t.Fatalf("critical first, then warning, then the rest, alphabetically: %v", first)
-		}
+
+	want := "api-gateway-6b8d7c9f5-2mkqp api-worker-5f7c9d8b4-aaaaa api-worker-5f7c9d8b4-xk2vn web-7d4f8c6b9-p8lqm"
+	if names(rows) != want {
+		t.Fatalf("pods must group by name:\n got %s\nwant %s", names(rows), want)
 	}
 
 	rows[0].CPUPct, rows[0].Worst = 99, 99
-	rows[1].CPUPct, rows[1].Worst = 92, 92
+	rows[3].CPUPct, rows[3].Worst = 1, 1
 	Sort(rows)
-	after := []string{rows[0].Name, rows[1].Name, rows[2].Name, rows[3].Name}
-	for i := range first {
-		if after[i] != first[i] {
-			t.Fatalf("percentages moving inside a bucket must not reorder the table: %v then %v", first, after)
+	if names(rows) != want {
+		t.Errorf("load must not pull a pod out of its group: %s", names(rows))
+	}
+}
+
+func TestSortByColumn(t *testing.T) {
+	now := time.Now()
+	rows := []Row{
+		{Name: "b", CPU: 300, HasCPU: true, Restarts: 1, Severity: Good, LastRestart: now.Add(-time.Hour)},
+		{Name: "a", CPU: 100, HasCPU: true, Restarts: 9, Severity: Bad},
+		{Name: "c", CPU: 200, HasCPU: true, Restarts: 5, Severity: Warn, LastRestart: now},
+	}
+
+	SortBy(rows, "cpu", OrderDesc, OrderAsc)
+	if names(rows) != "b c a" {
+		t.Errorf("cpu descending: %s", names(rows))
+	}
+
+	SortBy(rows, "cpu", OrderAsc, OrderAsc)
+	if names(rows) != "a c b" {
+		t.Errorf("cpu ascending: %s", names(rows))
+	}
+
+	SortBy(rows, "restarts", OrderDesc, OrderAsc)
+	if names(rows) != "a c b" {
+		t.Errorf("restarts descending: %s", names(rows))
+	}
+
+	SortBy(rows, "status", OrderDesc, OrderAsc)
+	if names(rows) != "a c b" {
+		t.Errorf("worst status first: %s", names(rows))
+	}
+
+	SortBy(rows, "last_restart", OrderDesc, OrderAsc)
+	if names(rows) != "c b a" {
+		t.Errorf("newest restart first: %s", names(rows))
+	}
+
+	rows[0].CPU, rows[1].CPU, rows[2].CPU = 7, 7, 7
+	SortBy(rows, "cpu", OrderDesc, OrderAsc)
+	if names(rows) != "a b c" {
+		t.Errorf("equal values fall back to the name: %s", names(rows))
+	}
+}
+
+func TestSortByNoneFallsBackToNames(t *testing.T) {
+	rows := []Row{
+		{Name: "web-2", Worst: 5},
+		{Name: "api-9", Worst: 95},
+		{Name: "api-1", Worst: 80},
+	}
+
+	SortBy(rows, "cpu", OrderNone, OrderAsc)
+	if names(rows) != "api-1 api-9 web-2" {
+		t.Errorf("without a chosen column the table is alphabetical: %s", names(rows))
+	}
+}
+
+func names(rows []Row) string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.Name)
+	}
+	return strings.Join(out, " ")
+}
+
+func TestNameOrderIsIndependentOfTheColumnSort(t *testing.T) {
+	fresh := func() []Row {
+		return []Row{
+			{Name: "api-1", CPU: 100, HasCPU: true},
+			{Name: "web-1", CPU: 300, HasCPU: true},
+			{Name: "api-2", CPU: 100, HasCPU: true},
 		}
 	}
 
-	rows[2].CPUPct, rows[2].Worst = 95, 95
-	Sort(rows)
-	if rows[0].Name != "a" || rows[1].Name != "b" || rows[2].Name != "d" {
-		t.Fatalf("crossing the critical threshold moves a pod up: %v", rows)
+	rows := fresh()
+	SortBy(rows, "", OrderNone, OrderAsc)
+	if names(rows) != "api-1 api-2 web-1" {
+		t.Errorf("alphabetical by default: %s", names(rows))
+	}
+
+	rows = fresh()
+	SortBy(rows, "", OrderNone, OrderDesc)
+	if names(rows) != "web-1 api-2 api-1" {
+		t.Errorf("against the alphabet: %s", names(rows))
+	}
+
+	rows = fresh()
+	SortBy(rows, "cpu", OrderDesc, OrderAsc)
+	if names(rows) != "web-1 api-1 api-2" {
+		t.Errorf("cpu first, then names: %s", names(rows))
+	}
+
+	rows = fresh()
+	SortBy(rows, "cpu", OrderDesc, OrderDesc)
+	if names(rows) != "web-1 api-2 api-1" {
+		t.Errorf("the name order only breaks ties: %s", names(rows))
+	}
+}
+
+func TestFilterDoesNotReorderTheSource(t *testing.T) {
+	source := []Row{{Name: "web-1"}, {Name: "api-1"}}
+
+	filtered := Filter(source, "")
+	SortBy(filtered, "", OrderNone, OrderAsc)
+
+	if source[0].Name != "web-1" {
+		t.Errorf("sorting the view must leave the source alone: %v", names(source))
+	}
+	if names(filtered) != "api-1 web-1" {
+		t.Errorf("the view itself is sorted: %v", names(filtered))
 	}
 }

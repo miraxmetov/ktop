@@ -12,21 +12,26 @@ import (
 )
 
 const (
-	gap          = 2
+	gap          = 3
 	minName      = 20
 	lineClock    = 0
-	lineTitle    = 1
-	nsBoxTop     = 2
-	lineNs       = 3
-	lineStatus   = 5
-	podBoxTop    = 7
-	linePods     = 8
-	lineHeader   = 10
-	lineRule     = 11
-	rowTop       = 12
-	overhead     = 14
+	lineUptime   = 1
+	lineTitle    = 2
+	nsBoxTop     = 3
+	lineNs       = 4
+	lineStatus   = 6
+	podBoxTop    = 8
+	linePods     = 9
+	tableTop     = 11
+	lineHeader   = 12
+	lineRule     = 13
+	rowTop       = 14
+	overhead     = 17
 	kubeInnerMin = 30
 	dropMax      = 8
+	sortBoth     = "\u21c5"
+	sortDesc     = "\u2193"
+	sortAsc      = "\u2191"
 )
 
 type Focus int
@@ -51,6 +56,7 @@ const (
 	HitDimCPU
 	HitDimMemory
 	HitPodName
+	HitColumn
 	HitActionInspect
 	HitActionRestart
 	HitActionTerminate
@@ -111,6 +117,10 @@ type Model struct {
 	Note           string
 	Err            string
 	Offset         int
+	Tick           int
+	SortKey        string
+	SortOrder      kube.Order
+	NameOrder      kube.Order
 	Expanded       string
 	Confirm        Action
 	Screen         Screen
@@ -136,15 +146,20 @@ const (
 
 type slot struct {
 	row    int
-	action bool
+	action int
 }
+
+const actionLines = 3
 
 func visibleSlots(m Model, offset, room int) []slot {
 	out := make([]slot, 0, room)
 	for i := offset; i < len(m.Rows) && len(out) < room; i++ {
-		out = append(out, slot{row: i})
-		if m.Rows[i].Name == m.Expanded && len(out) < room {
-			out = append(out, slot{row: i, action: true})
+		out = append(out, slot{row: i, action: -1})
+		if m.Rows[i].Name != m.Expanded {
+			continue
+		}
+		for line := 0; line < actionLines && len(out) < room; line++ {
+			out = append(out, slot{row: i, action: line})
 		}
 	}
 	return out
@@ -160,6 +175,7 @@ func (r rect) contains(x, y int) bool {
 
 func ApplyFilter(m *Model) {
 	m.Rows = kube.FilterLevel(kube.Filter(m.All, m.PodQuery), m.Level, m.Dimension)
+	kube.SortBy(m.Rows, m.SortKey, m.SortOrder, m.NameOrder)
 }
 
 func (m *Model) Counts() (int, int) {
@@ -214,41 +230,40 @@ func (m *Model) ClampChoice() {
 }
 
 type column struct {
-	key    string
-	title  string
-	width  int
-	right  bool
-	center bool
-	tinted bool
-	value  func(kube.Row) (string, tcell.Style)
+	key      string
+	title    string
+	width    int
+	tinted   bool
+	sortable bool
+	value    func(kube.Row) (string, tcell.Style)
 }
 
 var columns = []column{
-	{key: "name", title: "POD", width: 0, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "name", title: "POD", width: 0, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		return r.Name, styleBase
 	}},
-	{key: "status", title: "STATUS", width: 18, tinted: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "status", title: "STATUS", width: 18, tinted: true, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		return r.Status, severityStyle(r.Severity)
 	}},
-	{key: "cpu", title: "CPU", width: 8, right: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "cpu", title: "CPU", width: 8, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		if !r.HasCPU {
 			return "-", styleDim
 		}
 		return fmt.Sprintf("%.0fm", r.CPU), styleBase
 	}},
-	{key: "cpu_pct", title: "%LIM", width: 6, right: true, tinted: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "cpu_pct", title: "%LIM", width: 6, tinted: true, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		return pctText(r.CPUPct), pctStyle(r.CPUPct)
 	}},
-	{key: "mem", title: "MEM", width: 9, right: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "mem", title: "MEM", width: 9, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		if !r.HasMem {
 			return "-", styleDim
 		}
 		return fmt.Sprintf("%.0fMi", r.Mem), styleBase
 	}},
-	{key: "mem_pct", title: "%LIM", width: 6, right: true, tinted: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "mem_pct", title: "%LIM", width: 6, tinted: true, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		return pctText(r.MemPct), pctStyle(r.MemPct)
 	}},
-	{key: "restarts", title: "RESTART CTR", width: 11, center: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "restarts", title: "RESTART CTR", width: 13, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		if r.NewRestarts > 0 {
 			return fmt.Sprintf("%d +%d", r.Restarts, r.NewRestarts), styleWarn
 		}
@@ -257,7 +272,7 @@ var columns = []column{
 		}
 		return fmt.Sprintf("%d", r.Restarts), styleBold
 	}},
-	{key: "ooms", title: "OOM CTR", width: 7, center: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "ooms", title: "OOM CTR", width: 9, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		if r.OOMs == 0 {
 			return "0", styleDim
 		}
@@ -270,7 +285,7 @@ var columns = []column{
 		}
 		return text, styleBold
 	}},
-	{key: "last_restart", title: "LAST RESTART", width: 24, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "last_restart", title: "LAST RESTART", width: 24, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		if r.LastRestart.IsZero() {
 			return "-", styleDim
 		}
@@ -458,7 +473,7 @@ func geom(m Model, width, height int) geometry {
 	copy(cols, columns)
 
 	for _, key := range dropOrder {
-		if fixedWidth(cols)+minName <= width {
+		if fixedWidth(cols)+minName < width {
 			break
 		}
 		filtered := cols[:0]
@@ -489,10 +504,13 @@ func geom(m Model, width, height int) geometry {
 
 	g := geometry{cols: cols, widths: widths, total: total, room: Visible(height)}
 
-	nsInner := boxWidthFor(total, 6, 21, 30)
 	podBoxWidth := widths[0]
 	if podBoxWidth < 26 {
 		podBoxWidth = 26
+	}
+	nsInner := boxWidthFor(total, 6, 21, 30)
+	if nsInner+4 > podBoxWidth-4 {
+		nsInner = max(17, podBoxWidth-8)
 	}
 	g.nsBox = rect{x: 0, y: nsBoxTop, w: nsInner + 4, h: 3}
 	g.podBox = rect{x: 0, y: podBoxTop, w: podBoxWidth, h: 3}
@@ -575,7 +593,51 @@ func fixedWidth(cols []column) int {
 	for _, c := range cols[1:] {
 		fixed += c.width
 	}
-	return fixed + gap*(len(cols)-1)
+	return fixed + gap*(len(cols)-1) + 4
+}
+
+func columnXs(widths []int) []int {
+	out := make([]int, len(widths))
+	x := 2
+	for i, w := range widths {
+		out[i] = x
+		x += w + gap
+	}
+	return out
+}
+
+func (g geometry) dividers() []int {
+	xs := columnXs(g.widths)
+	out := make([]int, 0, len(xs))
+	for i := 0; i < len(xs)-1; i++ {
+		out = append(out, xs[i]+g.widths[i]+1)
+	}
+	return out
+}
+
+func sortMark(m Model, c column) string {
+	if !c.sortable {
+		return ""
+	}
+	if c.key == "name" {
+		if m.SortKey != "" && m.SortOrder != kube.OrderNone {
+			return ""
+		}
+		if m.NameOrder == kube.OrderDesc {
+			return sortDesc
+		}
+		return sortAsc
+	}
+	if m.SortKey == "" || m.SortOrder == kube.OrderNone {
+		return sortBoth
+	}
+	if m.SortKey != c.key {
+		return ""
+	}
+	if m.SortOrder == kube.OrderDesc {
+		return sortDesc
+	}
+	return sortAsc
 }
 
 func Visible(height int) int {
@@ -596,11 +658,37 @@ type Layout struct {
 	DimStatus Rect
 	DimCPU    Rect
 	DimMemory Rect
+	Columns   map[string]Rect
+}
+
+func ColumnKeyAt(m Model, width, height, index int) string {
+	g := geom(m, width, height)
+	if index < 0 || index >= len(g.cols) {
+		return ""
+	}
+	return g.cols[index].key
+}
+
+func NextOrder(order kube.Order) kube.Order {
+	switch order {
+	case kube.OrderNone:
+		return kube.OrderDesc
+	case kube.OrderDesc:
+		return kube.OrderAsc
+	}
+	return kube.OrderNone
 }
 
 func Geometry(m Model, width, height int) Layout {
 	g := geom(m, width, height)
+	columns := make(map[string]Rect, len(g.cols))
+	xs := columnXs(g.widths)
+	for i, c := range g.cols {
+		columns[c.key] = Rect{X: xs[i], Y: lineHeader, W: g.widths[i], H: 1}
+	}
+
 	return Layout{
+		Columns:   columns,
 		Critical:  Rect{X: g.critical.x, Y: g.critical.y, W: g.critical.w, H: g.critical.h},
 		Warning:   Rect{X: g.warning.x, Y: g.warning.y, W: g.warning.w, H: g.warning.h},
 		DimStatus: Rect{X: g.dimStatus.x, Y: g.dimStatus.y, W: g.dimStatus.w, H: g.dimStatus.h},
@@ -643,6 +731,19 @@ func Hit(m Model, width, height, x, y int) (Target, int) {
 	if g.dimMemory.contains(x, y) {
 		return HitDimMemory, 0
 	}
+	if y == lineHeader && x < g.total {
+		xs := columnXs(g.widths)
+		for i, c := range g.cols {
+			if !c.sortable {
+				continue
+			}
+			if x >= xs[i] && x < xs[i]+g.widths[i] {
+				return HitColumn, i
+			}
+		}
+		return HitNone, 0
+	}
+
 	if y >= rowTop && y < rowTop+g.room && x < g.total {
 		offset := m.Offset
 		if offset > len(m.Rows)-g.room {
@@ -656,27 +757,17 @@ func Hit(m Model, width, height, x, y int) (Target, int) {
 		index := y - rowTop
 		if index < len(slots) {
 			sl := slots[index]
-			if !sl.action {
-				if x < g.widths[0] {
+			xs := columnXs(g.widths)
+			inName := x >= xs[0] && x < xs[0]+g.widths[0]
+
+			if sl.action < 0 {
+				if inName {
 					return HitPodName, sl.row
 				}
 				return HitRow, sl.row
 			}
-
-			first, second, third := actionRects(m)
-			switch {
-			case x >= first.x && x < first.x+first.w:
-				if m.Confirm != ActionNone {
-					return HitConfirmYes, sl.row
-				}
-				return HitActionInspect, sl.row
-			case x >= second.x && x < second.x+second.w:
-				if m.Confirm != ActionNone {
-					return HitConfirmCancel, sl.row
-				}
-				return HitActionRestart, sl.row
-			case m.Confirm == ActionNone && x >= third.x && x < third.x+third.w:
-				return HitActionTerminate, sl.row
+			if inName {
+				return actionTarget(m, sl.action), sl.row
 			}
 		}
 	}
@@ -779,49 +870,96 @@ const (
 	actionGap      = 2
 )
 
-func actionRects(m Model) (rect, rect, rect) {
-	y := 0
+func actionLabel(m Model, line int) (string, tcell.Style) {
 	if m.Confirm != ActionNone {
-		question := confirmQuestion(m)
-		yes := rect{x: actionIndent + len([]rune(question)) + actionGap, y: y, w: len(yesLabel), h: 1}
-		cancel := rect{x: yes.x + yes.w + actionGap, y: y, w: len(cancelLabel), h: 1}
-		return yes, cancel, rect{}
-	}
-	inspect := rect{x: actionIndent, y: y, w: len(inspectLabel), h: 1}
-	restart := rect{x: inspect.x + inspect.w + actionGap, y: y, w: len(restartLabel), h: 1}
-	terminate := rect{x: restart.x + restart.w + actionGap, y: y, w: len(terminateLabel), h: 1}
-	return inspect, restart, terminate
-}
-
-func confirmQuestion(m Model) string {
-	what := "Restart"
-	if m.Confirm == ActionTerminate {
-		what = "Terminate"
-	}
-	return what + " " + m.ExpandedName() + "?"
-}
-
-func drawActions(s tcell.Screen, m Model, g geometry, y int) {
-	for x := 0; x < g.total; x++ {
-		s.SetContent(x, y, ' ', nil, styleBase)
-	}
-
-	if m.Confirm != ActionNone {
-		yes, cancel, _ := actionRects(m)
 		style := styleWarn
 		if m.Confirm == ActionTerminate {
 			style = styleBad
 		}
-		puts(s, actionIndent, y, 0, false, confirmQuestion(m), style)
-		puts(s, yes.x, y, 0, false, yesLabel, style.Bold(true))
-		puts(s, cancel.x, y, 0, false, cancelLabel, styleDim)
-		return
+		switch line {
+		case 0:
+			return confirmQuestion(m), style
+		case 1:
+			return yesLabel, style.Bold(true)
+		}
+		return cancelLabel, styleDim
 	}
 
-	inspect, restart, terminate := actionRects(m)
-	puts(s, inspect.x, y, 0, false, inspectLabel, styleChoice)
-	puts(s, restart.x, y, 0, false, restartLabel, styleWarn)
-	puts(s, terminate.x, y, 0, false, terminateLabel, styleBad)
+	switch line {
+	case 0:
+		return inspectLabel, styleChoice
+	case 1:
+		return restartLabel, styleWarn
+	}
+	return terminateLabel, styleBad
+}
+
+func actionTarget(m Model, line int) Target {
+	if m.Confirm != ActionNone {
+		switch line {
+		case 1:
+			return HitConfirmYes
+		case 2:
+			return HitConfirmCancel
+		}
+		return HitNone
+	}
+
+	switch line {
+	case 0:
+		return HitActionInspect
+	case 1:
+		return HitActionRestart
+	}
+	return HitActionTerminate
+}
+
+func confirmQuestion(m Model) string {
+	if m.Confirm == ActionTerminate {
+		return "Terminate the pod?"
+	}
+	return "Restart the pod?"
+}
+
+func drawActions(s tcell.Screen, m Model, g geometry, y, line int) {
+	xs := columnXs(g.widths)
+	label, style := actionLabel(m, line)
+	puts(s, xs[0], y, g.widths[0], false, "  "+truncate(label, g.widths[0]-2), style)
+
+	for i := 1; i < len(g.cols); i++ {
+		puts(s, xs[i], y, g.widths[i], false, "", styleBase)
+	}
+}
+
+func drawTableFrame(s tcell.Screen, g geometry, height int) {
+	bottom := height - 3
+	dividers := g.dividers()
+
+	border := func(y int, left, fill, cross, right string) {
+		puts(s, 0, y, 0, false, left, styleDim)
+		for x := 1; x < g.total-1; x++ {
+			puts(s, x, y, 0, false, fill, styleDim)
+		}
+		for _, x := range dividers {
+			puts(s, x, y, 0, false, cross, styleDim)
+		}
+		puts(s, g.total-1, y, 0, false, right, styleDim)
+	}
+
+	border(tableTop, "\u250c", "\u2500", "\u252c", "\u2510")
+	border(lineRule, "\u251c", "\u2500", "\u253c", "\u2524")
+	border(bottom, "\u2514", "\u2500", "\u2534", "\u2518")
+
+	for y := tableTop + 1; y < bottom; y++ {
+		if y == lineRule {
+			continue
+		}
+		puts(s, 0, y, 0, false, "\u2502", styleDim)
+		puts(s, g.total-1, y, 0, false, "\u2502", styleDim)
+		for _, x := range dividers {
+			puts(s, x, y, 0, false, "\u2502", styleDim)
+		}
+	}
 }
 
 func drawDropdown(s tcell.Screen, g geometry, m Model) {
@@ -897,13 +1035,14 @@ func Draw(s tcell.Screen, m Model) {
 	}
 
 	clock := now.Format("15:04:05")
-	uptime := ""
+	puts(s, max(0, (total-len(clock))/2), lineClock, 0, false, clock, styleAccent)
+
 	if !m.Started.IsZero() {
-		uptime = "  (" + Uptime(now.Sub(m.Started)) + ")"
+		uptime := "(" + Uptime(now.Sub(m.Started)) + ")"
+		puts(s, max(0, (total-len([]rune(uptime)))/2), lineUptime, 0, false, uptime, styleDim)
 	}
-	clockX := max(0, (total-len(clock)-len(uptime))/2)
-	x := clockX + puts(s, clockX, lineClock, 0, false, clock, styleAccent)
-	puts(s, x, lineClock, 0, false, uptime, styleDim)
+
+	x := 0
 
 	x = puts(s, 0, lineTitle, 0, false, "Using ", styleDim)
 	x += puts(s, x, lineTitle, 0, false, m.Namespace, styleAccent.Bold(true))
@@ -952,13 +1091,20 @@ func Draw(s tcell.Screen, m Model) {
 			fmt.Sprintf("%d/%d", len(m.Rows), len(m.All)), styleAccent)
 	}
 
-	x = 0
+	drawTableFrame(s, g, height)
+
+	xs := columnXs(g.widths)
 	for i, c := range g.cols {
-		x += puts(s, x, lineHeader, g.widths[i], c.right, c.title, styleBold)
-		x += gap
-	}
-	for i := 0; i < total; i++ {
-		s.SetContent(i, lineRule, '-', nil, styleDim)
+		header := c.title
+		if mark := sortMark(m, c); mark != "" {
+			header += " " + mark
+		}
+		header = centerText(header, g.widths[i])
+		style := styleBold
+		if m.SortKey == c.key && m.SortOrder != kube.OrderNone {
+			style = styleBold.Foreground(tcell.ColorTeal)
+		}
+		puts(s, xs[i], lineHeader, g.widths[i], false, header, style)
 	}
 
 	offset := m.Offset
@@ -981,31 +1127,29 @@ func Draw(s tcell.Screen, m Model) {
 		case m.PodQuery != "" && len(m.All) > 0:
 			empty = "no pod matches " + m.PodQuery
 		}
-		puts(s, 0, rowTop, 0, false, empty, styleDim)
+		puts(s, 2, rowTop, 0, false, empty, styleDim)
 	}
 
 	for i, sl := range visibleSlots(m, offset, g.room) {
 		y := rowTop + i
-		if sl.action {
-			drawActions(s, m, g, y)
+		if sl.action >= 0 {
+			drawActions(s, m, g, y, sl.action)
 			continue
 		}
 
 		row := m.Rows[sl.row]
-		x = 0
 		for ci, c := range g.cols {
 			text, style := c.value(row)
 			if c.key == "last_restart" && !row.LastRestart.IsZero() {
 				text = RestartText(row.LastRestart, now)
 			}
-			if c.center {
-				text = centerText(text, g.widths[ci])
+			if c.key == "name" {
+				if row.Name == m.Expanded {
+					text = marqueeText(text, g.widths[ci], m.Tick)
+					style = styleChoice
+				}
 			}
-			if c.key == "name" && m.Rows[sl.row].Name == m.Expanded {
-				style = styleChoice
-			}
-			x += puts(s, x, y, g.widths[ci], c.right, text, style)
-			x += gap
+			puts(s, xs[ci], y, g.widths[ci], false, centerText(text, g.widths[ci]), style)
 		}
 	}
 
@@ -1100,6 +1244,47 @@ func emptyLevelText(level kube.Level, dimension kube.Dimension) string {
 		return "no pod is " + what + " by memory"
 	}
 	return "no pod is " + what + " by cpu or memory"
+}
+
+const marqueePause = 6
+
+func marqueeOffset(tick, overflow int) int {
+	if overflow <= 0 {
+		return 0
+	}
+	cycle := 2*marqueePause + 2*overflow - 1
+	at := tick % cycle
+	if at < 0 {
+		at += cycle
+	}
+
+	switch {
+	case at < marqueePause:
+		return 0
+	case at < marqueePause+overflow:
+		return at - marqueePause + 1
+	case at < 2*marqueePause+overflow:
+		return overflow
+	}
+	return overflow - (at - 2*marqueePause - overflow) - 1
+}
+
+func marqueeText(text string, width, tick int) string {
+	runes := []rune(text)
+	overflow := len(runes) - width
+	if overflow <= 0 {
+		return text
+	}
+	at := marqueeOffset(tick, overflow)
+	return string(runes[at : at+width])
+}
+
+func NeedsMarquee(m Model, width, height int) bool {
+	if m.Expanded == "" {
+		return false
+	}
+	g := geom(m, width, height)
+	return len([]rune(m.Expanded)) > g.widths[0]
 }
 
 func centerText(text string, width int) string {

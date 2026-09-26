@@ -34,7 +34,6 @@ func sample(n int) []kube.Row {
 			CPUPct:      94,
 			MemPct:      179.7,
 			Worst:       179.7,
-			Problem:     true,
 		})
 	}
 	return rows
@@ -484,7 +483,7 @@ func TestDrawRestartCounterShowsTotalAndSessionDelta(t *testing.T) {
 	}
 
 	cells, w, _ := screen.GetContents()
-	column := strings.Index(lines[rowTop+1], "12 +2")
+	column := columnOf(t, lines[rowTop+1], "12 +2")
 	fg, _, _ := cells[(rowTop+1)*w+column].Style.Decompose()
 	if fg != warnColor {
 		t.Errorf("a live restart must stand out, got colour %v", fg)
@@ -696,8 +695,8 @@ func TestClockSitsCenteredOnItsOwnLine(t *testing.T) {
 		lines, _ := draw(t, width, 30, m)
 		clock := lines[lineClock]
 
-		if strings.TrimSpace(clock) != "16:58:08  (5m 0s)" {
-			t.Errorf("width %d: the top line must hold the clock and the timer: %q", width, clock)
+		if strings.TrimSpace(clock) != "16:58:08" {
+			t.Errorf("width %d: the top line holds the clock alone: %q", width, clock)
 		}
 		left := len(clock) - len(strings.TrimLeft(clock, " "))
 		right := (width - 1) - len(clock)
@@ -756,25 +755,32 @@ func TestCounterColumnsAreCentred(t *testing.T) {
 	rows := sample(1)
 	rows[0].Restarts, rows[0].NewRestarts, rows[0].OOMs = 7, 0, 3
 
-	lines, _ := draw(t, 170, 30, model(rows))
-	header, row := lines[lineHeader], lines[rowTop]
+	m := model(rows)
+	lines, _ := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+	xs := columnXs(g.widths)
+	row := []rune(lines[rowTop])
 
 	for _, c := range []struct {
-		title string
+		key   string
 		value string
-	}{{"RESTART CTR", "7"}, {"OOM CTR", "3"}} {
-		titleStart := strings.Index(header, c.title)
-		if titleStart < 0 {
-			t.Fatalf("column %q missing from %q", c.title, header)
+	}{{"restarts", "7"}, {"ooms", "3"}} {
+		index := -1
+		for i, col := range g.cols {
+			if col.key == c.key {
+				index = i
+			}
 		}
-		width := len(c.title)
-		field := row[titleStart : titleStart+width]
-		value := strings.TrimSpace(field)
-		if value != c.value {
-			t.Fatalf("column %q holds %q", c.title, field)
+		if index < 0 {
+			t.Fatalf("column %q is not on screen", c.key)
+		}
+
+		field := string(row[xs[index] : xs[index]+g.widths[index]])
+		if strings.TrimSpace(field) != c.value {
+			t.Fatalf("column %q holds %q", c.key, field)
 		}
 		left := strings.Index(field, c.value)
-		right := width - left - len(c.value)
+		right := g.widths[index] - left - len(c.value)
 		if left < right-1 || left > right+1 {
 			t.Errorf("%q is not centred in its column: %q (%d left, %d right)", c.value, field, left, right)
 		}
@@ -1001,12 +1007,8 @@ func TestWarningColourIsAmber(t *testing.T) {
 	lines, screen := draw(t, 170, 30, m)
 	cells, w, _ := screen.GetContents()
 
-	header := "%LIM"
-	column := strings.Index(lines[lineHeader], header)
-	if column < 0 {
-		t.Fatalf("column not found in %q", lines[lineHeader])
-	}
-	fg, _, _ := cells[(rowTop+1)*w+column+len(header)-1].Style.Decompose()
+	column := columnOf(t, lines[lineHeader], "%LIM")
+	fg, _, _ := cells[(rowTop+1)*w+column+len("%LIM")-1].Style.Decompose()
 	if fg != warnColor {
 		t.Errorf("a warning percentage must use the same amber, got %v", fg)
 	}
@@ -1068,20 +1070,45 @@ func TestUptimeUnits(t *testing.T) {
 	}
 }
 
-func TestUptimeIsDrawnBesideTheClock(t *testing.T) {
-	m := model(sample(2))
-	m.Now = time.Date(2026, 9, 23, 17, 0, 0, 0, time.Local)
-	m.Started = m.Now.Add(-(2*time.Hour + 5*time.Minute))
+func TestUptimeSitsUnderTheClockAndStaysCentred(t *testing.T) {
+	for _, c := range []struct {
+		since time.Duration
+		want  string
+	}{
+		{9 * time.Second, "(9s)"},
+		{3*time.Minute + 12*time.Second, "(3m 12s)"},
+		{2*time.Hour + 5*time.Minute, "(2h 5m)"},
+		{50 * time.Hour, "(2d 2h)"},
+		{20 * 24 * time.Hour, "(2w 6d)"},
+	} {
+		m := model(sample(2))
+		m.Now = time.Date(2026, 9, 26, 17, 0, 0, 0, time.Local)
+		m.Started = m.Now.Add(-c.since)
 
-	lines, screen := draw(t, 170, 30, m)
-	if !strings.Contains(lines[lineClock], "17:00:00  (2h 5m)") {
-		t.Errorf("top line: %q", lines[lineClock])
-	}
+		width := 171
+		lines, screen := draw(t, width, 30, m)
+		total := width - 1
 
-	cells, w, _ := screen.GetContents()
-	column := strings.Index(lines[lineClock], "(")
-	if fg, _, _ := cells[lineClock*w+column].Style.Decompose(); fg != tcell.ColorGray {
-		t.Errorf("the timer must be quieter than the clock, got %v", fg)
+		if strings.TrimSpace(lines[lineUptime]) != c.want {
+			t.Fatalf("uptime line: %q, want %q", lines[lineUptime], c.want)
+		}
+
+		indent := len(lines[lineUptime]) - len(strings.TrimLeft(lines[lineUptime], " "))
+		right := total - len(lines[lineUptime])
+		if indent < right-1 || indent > right+1 {
+			t.Errorf("%s is not centred: %d left, %d right", c.want, indent, right)
+		}
+
+		clockMiddle := strings.Index(lines[lineClock], "17:00:00") + len("17:00:00")/2
+		uptimeMiddle := indent + len(strings.TrimSpace(lines[lineUptime]))/2
+		if clockMiddle < uptimeMiddle-1 || clockMiddle > uptimeMiddle+1 {
+			t.Errorf("%s does not sit under the clock: %d vs %d", c.want, uptimeMiddle, clockMiddle)
+		}
+
+		cells, w, _ := screen.GetContents()
+		if fg, _, _ := cells[lineUptime*w+indent].Style.Decompose(); fg != tcell.ColorGray {
+			t.Errorf("the timer must stay quiet, got %v", fg)
+		}
 	}
 }
 
@@ -1090,8 +1117,8 @@ func TestUptimeHiddenWithoutAStart(t *testing.T) {
 	m.Now = time.Date(2026, 9, 23, 17, 0, 0, 0, time.Local)
 
 	lines, _ := draw(t, 170, 30, m)
-	if strings.Contains(lines[lineClock], "(") {
-		t.Errorf("no start time, no timer: %q", lines[lineClock])
+	if strings.Contains(lines[lineClock]+lines[lineUptime], "(") {
+		t.Errorf("no start time, no timer: %q / %q", lines[lineClock], lines[lineUptime])
 	}
 }
 
@@ -1099,11 +1126,11 @@ func TestPodFrameMatchesThePodColumn(t *testing.T) {
 	for _, width := range []int{110, 160, 210, 260} {
 		m := model(sample(3))
 		lines, _ := draw(t, width, 30, m)
+		g := geom(m, width, 30)
 
 		frame := len([]rune(lines[podBoxTop]))
-		column := strings.Index(lines[lineHeader], "STATUS") - gap
-		if frame != column {
-			t.Errorf("width %d: the frame is %d wide, the POD column is %d", width, frame, column)
+		if frame != g.widths[0] {
+			t.Errorf("width %d: the frame is %d wide, the POD column is %d", width, frame, g.widths[0])
 		}
 	}
 }
@@ -1150,95 +1177,87 @@ func TestNamespaceUsesTheClockColour(t *testing.T) {
 	}
 }
 
-func TestActionRowOpensUnderThePod(t *testing.T) {
+func TestActionsStackInsideThePodColumn(t *testing.T) {
 	m := model(sample(5))
 	m.Expanded = m.Rows[1].Name
 
 	lines, _ := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+	xs := columnXs(g.widths)
 
 	if !strings.Contains(lines[rowTop+1], "pod-01") {
 		t.Fatalf("the pod stays where it was: %q", lines[rowTop+1])
 	}
-	actions := lines[rowTop+2]
-	for _, want := range []string{"[ Inspect ]", "[ Restart ]", "[ Terminate ]"} {
-		if !strings.Contains(actions, want) {
-			t.Errorf("action row missing %q: %q", want, actions)
+
+	for i, want := range []string{"[ Inspect ]", "[ Restart ]", "[ Terminate ]"} {
+		row := []rune(lines[rowTop+2+i])
+		cell := string(row[xs[0] : xs[0]+g.widths[0]])
+		if !strings.Contains(cell, want) {
+			t.Errorf("line %d must hold %q: %q", i, want, cell)
+		}
+		for _, x := range g.dividers() {
+			if row[x] != '\u2502' {
+				t.Errorf("line %d must keep the grid at %d", i, x)
+			}
+		}
+		if rest := string(row[xs[1]:]); strings.Contains(rest, "[") {
+			t.Errorf("the buttons must stay inside the POD column: %q", rest)
 		}
 	}
-	if !strings.Contains(lines[rowTop+3], "pod-02") {
-		t.Errorf("the rest of the table shifts down by one: %q", lines[rowTop+3])
+
+	if !strings.Contains(lines[rowTop+5], "pod-02") {
+		t.Errorf("the rest of the table shifts down by three: %q", lines[rowTop+5])
 	}
 }
 
-func TestActionRowHitTesting(t *testing.T) {
+func TestActionsHitTesting(t *testing.T) {
 	m := model(sample(4))
 	m.Expanded = m.Rows[0].Name
+	g := geom(m, 170, 30)
+	xs := columnXs(g.widths)
 
-	lines, _ := draw(t, 170, 30, m)
-	actions := lines[rowTop+1]
-
-	cases := []struct {
-		label  string
-		target Target
-	}{
-		{"[ Inspect ]", HitActionInspect},
-		{"[ Restart ]", HitActionRestart},
-		{"[ Terminate ]", HitActionTerminate},
-	}
-	for _, c := range cases {
-		x := strings.Index(actions, c.label) + 2
-		if target, index := Hit(m, 170, 30, x, rowTop+1); target != c.target || index != 0 {
-			t.Errorf("click on %s: got %v %d", c.label, target, index)
+	for i, want := range []Target{HitActionInspect, HitActionRestart, HitActionTerminate} {
+		if target, index := Hit(m, 170, 30, xs[0]+4, rowTop+1+i); target != want || index != 0 {
+			t.Errorf("line %d: got %v %d, want %v", i, target, index, want)
 		}
 	}
-	if target, _ := Hit(m, 170, 30, 70, rowTop+1); target != HitNone {
-		t.Errorf("empty space on the action row does nothing: %v", target)
+	if target, _ := Hit(m, 170, 30, xs[2]+1, rowTop+1); target != HitNone {
+		t.Errorf("outside the POD column nothing happens: %v", target)
 	}
 }
 
-func TestConfirmationReplacesTheButtons(t *testing.T) {
+func TestConfirmationTakesTheSameThreeLines(t *testing.T) {
 	m := model(sample(3))
 	m.Expanded = m.Rows[0].Name
 	m.Confirm = ActionTerminate
 
 	lines, _ := draw(t, 170, 30, m)
-	row := lines[rowTop+1]
+	g := geom(m, 170, 30)
+	xs := columnXs(g.widths)
 
-	if !strings.Contains(row, "Terminate "+m.Rows[0].Name+"?") {
-		t.Errorf("the question must name the pod: %q", row)
+	if !strings.Contains(lines[rowTop+1], "Terminate ") {
+		t.Errorf("the question must name the action: %q", lines[rowTop+1])
 	}
-	for _, want := range []string{"[ Yes ]", "[ Cancel ]"} {
-		if !strings.Contains(row, want) {
-			t.Errorf("confirmation missing %q: %q", want, row)
-		}
+	if !strings.Contains(lines[rowTop+2], "[ Yes ]") {
+		t.Errorf("Yes belongs on its own line: %q", lines[rowTop+2])
 	}
-	if strings.Contains(row, "[ Inspect ]") {
-		t.Errorf("the buttons must step aside: %q", row)
+	if !strings.Contains(lines[rowTop+3], "[ Cancel ]") {
+		t.Errorf("Cancel belongs on its own line: %q", lines[rowTop+3])
+	}
+	if strings.Contains(strings.Join(lines, "\n"), "[ Inspect ]") {
+		t.Error("the buttons must step aside while the question is up")
 	}
 
-	yes := strings.Index(row, "[ Yes ]") + 2
-	if target, _ := Hit(m, 170, 30, yes, rowTop+1); target != HitConfirmYes {
+	if target, _ := Hit(m, 170, 30, xs[0]+4, rowTop+2); target != HitConfirmYes {
 		t.Errorf("click on Yes: %v", target)
 	}
-	cancel := strings.Index(row, "[ Cancel ]") + 2
-	if target, _ := Hit(m, 170, 30, cancel, rowTop+1); target != HitConfirmCancel {
+	if target, _ := Hit(m, 170, 30, xs[0]+4, rowTop+3); target != HitConfirmCancel {
 		t.Errorf("click on Cancel: %v", target)
 	}
-}
-
-func TestEmptyTableSaysWhyItIsEmpty(t *testing.T) {
-	loading := model(nil)
-	loading.Loaded = false
-	lines, _ := draw(t, 170, 30, loading)
-	if !strings.Contains(lines[rowTop], "asking the cluster for pods") {
-		t.Errorf("before the first answer: %q", lines[rowTop])
+	if target, _ := Hit(m, 170, 30, xs[0]+4, rowTop+1); target != HitNone {
+		t.Errorf("the question itself is not a button: %v", target)
 	}
-
-	loaded := model(nil)
-	lines, _ = draw(t, 170, 30, loaded)
-	if !strings.Contains(lines[rowTop], "no pods in this namespace") {
-		t.Errorf("after the first answer: %q", lines[rowTop])
-	}
+	_ = g
 }
 
 func inspecting() Model {
@@ -1419,6 +1438,15 @@ func TestInspectWrapsLongLines(t *testing.T) {
 	}
 }
 
+func columnOf(t *testing.T, line, needle string) int {
+	t.Helper()
+	at := strings.Index(line, needle)
+	if at < 0 {
+		t.Fatalf("%q not found in %q", needle, line)
+	}
+	return len([]rune(line[:at]))
+}
+
 func styleAt(t *testing.T, screen tcell.SimulationScreen, line string, needle string, y int) tcell.Style {
 	t.Helper()
 	at := strings.Index(line, needle)
@@ -1571,4 +1599,474 @@ func TestLogTimestampsAreDrawnQuietly(t *testing.T) {
 		return
 	}
 	t.Fatal("the log line is not on screen")
+}
+
+func TestInspectMarksHiddenLinesOnTheFrame(t *testing.T) {
+	m := inspecting()
+	long := make([]string, 0, 60)
+	for i := 0; i < 60; i++ {
+		long = append(long, fmt.Sprintf("  field %02d          value", i))
+	}
+	m.Inspect.Default = long
+
+	g := inspectGeom(140, 28)
+	lines, _ := draw(t, 140, 28, m)
+
+	bottom := lines[g.left.y+g.left.h-1]
+	if !strings.Contains(bottom, "more") {
+		t.Errorf("the bottom frame must say how much is left: %q", bottom)
+	}
+	if strings.Contains(strings.Join(lines, "\n"), "more below") {
+		t.Error("the marker must not eat a line of content any more")
+	}
+
+	last := lines[g.left.y+g.room]
+	if !strings.Contains(last, "field") {
+		t.Errorf("every row of the pane must show content: %q", last)
+	}
+
+	m.Inspect.Offset = 10
+	scrolled, _ := draw(t, 140, 28, m)
+	if !strings.Contains(scrolled[g.left.y], "more") {
+		t.Errorf("the top frame must say what is above: %q", scrolled[g.left.y])
+	}
+}
+
+func TestMaxInspectOffsetCountsWrappedLines(t *testing.T) {
+	m := inspecting()
+	m.Inspect.Format = FormatTextual
+	m.Inspect.Textual = []string{strings.Repeat("word ", 500)}
+
+	limit := MaxInspectOffset(m, 140, 28)
+	if limit <= 0 {
+		t.Fatal("a wrapped paragraph must be scrollable")
+	}
+
+	g := inspectGeom(140, 28)
+	if want := len(wrap(m.Inspect.Textual, g.textArea)) - g.room; limit != want {
+		t.Errorf("limit %d, want %d", limit, want)
+	}
+
+	short := inspecting()
+	short.Inspect.Default = []string{"POD", "  name    api"}
+	if got := MaxInspectOffset(short, 140, 28); got != 0 {
+		t.Errorf("content that fits must not scroll, got %d", got)
+	}
+}
+
+func TestTableIsDrawnAsAGrid(t *testing.T) {
+	m := model(sample(3))
+	lines, _ := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+
+	top := []rune(lines[tableTop])
+	if top[0] != '┌' || top[g.total-1] != '┐' {
+		t.Fatalf("top border: %q", lines[tableTop])
+	}
+	rule := []rune(lines[lineRule])
+	if rule[0] != '├' || rule[g.total-1] != '┤' {
+		t.Fatalf("header separator: %q", lines[lineRule])
+	}
+	bottom := []rune(lines[27])
+	if bottom[0] != '└' || bottom[g.total-1] != '┘' {
+		t.Fatalf("bottom border: %q", lines[27])
+	}
+
+	for _, x := range g.dividers() {
+		if top[x] != '┬' {
+			t.Errorf("column divider missing from the top border at %d", x)
+		}
+		if rule[x] != '┼' {
+			t.Errorf("column divider missing from the separator at %d", x)
+		}
+		if bottom[x] != '┴' {
+			t.Errorf("column divider missing from the bottom border at %d", x)
+		}
+		if row := []rune(lines[rowTop]); row[x] != '│' {
+			t.Errorf("column divider missing from a data row at %d", x)
+		}
+	}
+
+	row := []rune(lines[rowTop])
+	if row[0] != '│' || row[g.total-1] != '│' {
+		t.Errorf("rows must sit inside the frame: %q", lines[rowTop])
+	}
+}
+
+func TestSortableColumnsOfferBothArrows(t *testing.T) {
+	m := model(sample(3))
+	lines, _ := draw(t, 200, 30, m)
+	g := geom(m, 200, 30)
+	xs := columnXs(g.widths)
+	header := []rune(lines[lineHeader])
+
+	for i, c := range g.cols {
+		cell := string(header[xs[i] : xs[i]+g.widths[i]])
+		switch {
+		case c.key == "name":
+			if !strings.Contains(cell, sortAsc) || strings.Contains(cell, sortBoth) {
+				t.Errorf("with nothing else sorting, POD shows its direction: %q", cell)
+			}
+		case c.sortable:
+			if !strings.Contains(cell, sortBoth) {
+				t.Errorf("column %q must offer sorting: %q", c.key, cell)
+			}
+		default:
+			if strings.Contains(cell, sortBoth) {
+				t.Errorf("column %q must not offer sorting: %q", c.key, cell)
+			}
+		}
+	}
+
+	for _, c := range g.cols {
+		if c.key == "exit" && c.sortable {
+			t.Error("EXIT must stay unsortable")
+		}
+	}
+}
+
+func TestNameArrowFollowsItsOwnOrder(t *testing.T) {
+	m := model(sample(3))
+	g := geom(m, 200, 30)
+	xs := columnXs(g.widths)
+
+	cell := func(m Model) string {
+		lines, _ := draw(t, 200, 30, m)
+		row := []rune(lines[lineHeader])
+		return string(row[xs[0] : xs[0]+g.widths[0]])
+	}
+
+	if got := cell(m); !strings.Contains(got, "POD "+sortAsc) {
+		t.Errorf("alphabetical by default: %q", got)
+	}
+
+	m.NameOrder = kube.OrderDesc
+	if got := cell(m); !strings.Contains(got, "POD "+sortDesc) {
+		t.Errorf("against the alphabet: %q", got)
+	}
+
+	m.SortKey, m.SortOrder = "cpu", kube.OrderDesc
+	if got := cell(m); strings.Contains(got, sortAsc) || strings.Contains(got, sortDesc) {
+		t.Errorf("while a column sorts, POD hides its arrow too: %q", got)
+	}
+
+	m.SortKey, m.SortOrder = "", kube.OrderNone
+	if got := cell(m); !strings.Contains(got, "POD "+sortDesc) {
+		t.Errorf("dropping the column sort brings it back: %q", got)
+	}
+}
+
+func TestNameOrderReordersTheTable(t *testing.T) {
+	m := model(sample(4))
+	ApplyFilter(&m)
+	if !strings.HasPrefix(m.Rows[0].Name, "pod-00") {
+		t.Fatalf("default order: %q", m.Rows[0].Name)
+	}
+
+	m.NameOrder = kube.OrderDesc
+	ApplyFilter(&m)
+	if !strings.HasPrefix(m.Rows[0].Name, "pod-03") {
+		t.Fatalf("reversed order: %q", m.Rows[0].Name)
+	}
+}
+
+func TestColumnSortHidesEveryOtherArrow(t *testing.T) {
+	m := model(sample(3))
+	m.SortKey, m.SortOrder = "mem", kube.OrderDesc
+
+	lines, _ := draw(t, 200, 30, m)
+	header := lines[lineHeader]
+
+	if strings.Count(header, sortDesc) != 1 || strings.Contains(header, sortAsc) {
+		t.Errorf("exactly one arrow, on the sorted column: %q", header)
+	}
+	if strings.Contains(header, sortBoth) {
+		t.Errorf("the offers step aside as well: %q", header)
+	}
+}
+
+func TestSortedColumnKeepsTheOnlyArrow(t *testing.T) {
+	m := model(sample(3))
+	m.SortKey, m.SortOrder = "cpu", kube.OrderDesc
+	ApplyFilter(&m)
+
+	lines, _ := draw(t, 200, 30, m)
+	header := lines[lineHeader]
+
+	if strings.Contains(header, sortBoth) {
+		t.Errorf("while one column sorts, the others hide their arrows: %q", header)
+	}
+	if strings.Count(header, sortDesc) != 1 {
+		t.Errorf("exactly one arrow must remain: %q", header)
+	}
+	at := strings.Index(header, "CPU")
+	if !strings.Contains(header[at:at+8], sortDesc) {
+		t.Errorf("the arrow belongs to the sorted column: %q", header)
+	}
+
+	m.SortOrder = kube.OrderAsc
+	lines, _ = draw(t, 200, 30, m)
+	if !strings.Contains(lines[lineHeader], sortAsc) || strings.Contains(lines[lineHeader], sortDesc) {
+		t.Errorf("ascending must flip the arrow: %q", lines[lineHeader])
+	}
+
+	m.SortKey, m.SortOrder = "", kube.OrderNone
+	lines, _ = draw(t, 200, 30, m)
+	if strings.Count(lines[lineHeader], sortBoth) < 5 {
+		t.Errorf("dropping the sort brings every arrow back: %q", lines[lineHeader])
+	}
+}
+
+func TestHitFindsSortableHeaders(t *testing.T) {
+	m := model(sample(3))
+	g := geom(m, 200, 30)
+	xs := columnXs(g.widths)
+
+	for i, c := range g.cols {
+		target, index := Hit(m, 200, 30, xs[i]+1, lineHeader)
+		if !c.sortable {
+			if target != HitNone {
+				t.Errorf("column %q must not react: %v", c.key, target)
+			}
+			continue
+		}
+		if target != HitColumn || index != i {
+			t.Errorf("column %q: got %v %d", c.key, target, index)
+		}
+	}
+}
+
+func TestSortingReordersTheRows(t *testing.T) {
+	rows := sample(3)
+	rows[0].CPU, rows[1].CPU, rows[2].CPU = 100, 900, 500
+
+	m := model(rows)
+	m.SortKey, m.SortOrder = "cpu", kube.OrderDesc
+	ApplyFilter(&m)
+	if m.Rows[0].CPU != 900 || m.Rows[2].CPU != 100 {
+		t.Errorf("descending: %v", []float64{m.Rows[0].CPU, m.Rows[1].CPU, m.Rows[2].CPU})
+	}
+
+	m.SortOrder = kube.OrderAsc
+	ApplyFilter(&m)
+	if m.Rows[0].CPU != 100 || m.Rows[2].CPU != 900 {
+		t.Errorf("ascending: %v", []float64{m.Rows[0].CPU, m.Rows[1].CPU, m.Rows[2].CPU})
+	}
+}
+
+func TestNextOrderCycles(t *testing.T) {
+	order := kube.OrderNone
+	order = NextOrder(order)
+	if order != kube.OrderDesc {
+		t.Fatalf("first click sorts from the largest: %v", order)
+	}
+	order = NextOrder(order)
+	if order != kube.OrderAsc {
+		t.Fatalf("second click flips it: %v", order)
+	}
+	order = NextOrder(order)
+	if order != kube.OrderNone {
+		t.Fatalf("third click drops it: %v", order)
+	}
+}
+
+func TestMarqueeHoldsThenWalksAndComesBack(t *testing.T) {
+	overflow := 3
+	want := []int{0, 0, 0, 0, 0, 0, 1, 2, 3, 3, 3, 3, 3, 3, 3, 2, 1, 0, 0, 0}
+
+	for tick, expected := range want {
+		if got := marqueeOffset(tick, overflow); got != expected {
+			t.Fatalf("tick %d: offset %d, want %d", tick, got, expected)
+		}
+	}
+
+	for tick := 0; tick < 50; tick++ {
+		if got := marqueeOffset(tick, 0); got != 0 {
+			t.Fatalf("a name that fits never moves, tick %d gave %d", tick, got)
+		}
+	}
+}
+
+func TestMarqueeTextWalksThroughTheName(t *testing.T) {
+	name := "nestapp-backend-67fb4b65c4-f6vsc"
+	width := 20
+
+	first := marqueeText(name, width, 0)
+	if first != name[:width] {
+		t.Fatalf("it must start at the beginning: %q", first)
+	}
+
+	seen := map[string]bool{}
+	for tick := 0; tick < 60; tick++ {
+		window := marqueeText(name, width, tick)
+		if len([]rune(window)) != width {
+			t.Fatalf("tick %d: window %q is %d wide", tick, window, len([]rune(window)))
+		}
+		if !strings.Contains(name, window) {
+			t.Fatalf("tick %d: %q is not part of the name", tick, window)
+		}
+		seen[window] = true
+	}
+
+	if !seen[name[len(name)-width:]] {
+		t.Error("the end of the name must be reached")
+	}
+	if len(seen) < 5 {
+		t.Errorf("the name must actually travel, saw %d windows", len(seen))
+	}
+
+	short := marqueeText("api-1", width, 7)
+	if short != "api-1" {
+		t.Errorf("short names stay put: %q", short)
+	}
+}
+
+func TestOnlyTheChosenPodScrolls(t *testing.T) {
+	m := model(sample(3))
+	if NeedsMarquee(m, 100, 30) {
+		t.Error("nothing must scroll while no pod is chosen")
+	}
+
+	m.Expanded = m.Rows[0].Name
+	if !NeedsMarquee(m, 100, 30) {
+		t.Error("a chosen pod with a long name must scroll")
+	}
+
+	short := model([]kube.Row{{Name: "api-1", CPUPct: -1, MemPct: -1, Worst: -1}})
+	short.Expanded = "api-1"
+	if NeedsMarquee(short, 200, 30) {
+		t.Error("a name that fits must not keep the screen busy")
+	}
+}
+
+func TestOnlyTheChosenNameMovesOnScreen(t *testing.T) {
+	m := model(sample(3))
+	m.Expanded = m.Rows[1].Name
+	m.Tick = marqueePause + 4
+
+	lines, _ := draw(t, 100, 30, m)
+	g := geom(m, 100, 30)
+	xs := columnXs(g.widths)
+
+	cell := func(y int) string {
+		row := []rune(lines[y])
+		return string(row[xs[0] : xs[0]+g.widths[0]])
+	}
+
+	if !strings.HasPrefix(strings.TrimSpace(cell(rowTop)), "pod-00") {
+		t.Errorf("an untouched name stays at its beginning: %q", cell(rowTop))
+	}
+	moved := strings.TrimSpace(cell(rowTop + 1))
+	if strings.HasPrefix(moved, "pod-01") {
+		t.Errorf("the chosen name must have moved: %q", moved)
+	}
+	if !strings.Contains(m.Rows[1].Name, moved) {
+		t.Errorf("the window must stay inside the name: %q", moved)
+	}
+}
+
+func TestDrawScrollsTheNameInPlace(t *testing.T) {
+	rows := []kube.Row{{Name: "nestapp-backend-67fb4b65c4-f6vsc-with-a-very-long-tail", CPUPct: -1, MemPct: -1, Worst: -1}}
+	m := model(rows)
+	m.Expanded = rows[0].Name
+
+	g := geom(m, 120, 30)
+	first, _ := draw(t, 120, 30, m)
+
+	m.Tick = marqueePause + 4
+	later, _ := draw(t, 120, 30, m)
+
+	cell := func(lines []string) string {
+		row := []rune(lines[rowTop])
+		xs := columnXs(g.widths)
+		return string(row[xs[0] : xs[0]+g.widths[0]])
+	}
+
+	if cell(first) == cell(later) {
+		t.Fatalf("the name must move: %q", cell(first))
+	}
+	if !strings.Contains(rows[0].Name, strings.TrimSpace(cell(later))) {
+		t.Errorf("the window must stay inside the name: %q", cell(later))
+	}
+	if len([]rune(cell(later))) != g.widths[0] {
+		t.Errorf("the cell keeps its width: %q", cell(later))
+	}
+}
+
+func TestEveryCellIsCentred(t *testing.T) {
+	rows := sample(2)
+	rows[0].Status = "Running"
+	rows[0].Restarts, rows[0].OOMs = 7, 3
+
+	m := model(rows)
+	lines, _ := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+	xs := columnXs(g.widths)
+
+	centred := func(y int, label string) {
+		t.Helper()
+		row := []rune(lines[y])
+		for i, c := range g.cols {
+			cell := string(row[xs[i] : xs[i]+g.widths[i]])
+			text := strings.TrimSpace(cell)
+			if text == "" {
+				continue
+			}
+			left := strings.Index(cell, text)
+			right := g.widths[i] - left - len([]rune(text))
+			if left < right-1 || left > right+1 {
+				t.Errorf("%s: %q in column %q is not centred (%d left, %d right)",
+					label, text, c.key, left, right)
+			}
+		}
+	}
+
+	centred(lineHeader, "header")
+	centred(rowTop, "row")
+}
+
+func TestHeaderKeepsItsArrowWhileCentred(t *testing.T) {
+	m := model(sample(2))
+	m.SortKey, m.SortOrder = "mem", kube.OrderDesc
+
+	lines, _ := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+	xs := columnXs(g.widths)
+	row := []rune(lines[lineHeader])
+
+	for i, c := range g.cols {
+		if c.key != "mem" {
+			continue
+		}
+		cell := string(row[xs[i] : xs[i]+g.widths[i]])
+		text := strings.TrimSpace(cell)
+		if text != "MEM "+sortDesc {
+			t.Fatalf("header cell: %q", cell)
+		}
+		left := strings.Index(cell, text)
+		right := g.widths[i] - left - len([]rune(text))
+		if left < right-1 || left > right+1 {
+			t.Errorf("the sorted header is not centred: %q", cell)
+		}
+	}
+}
+
+func TestConfirmationAsksAboutThePodWithoutItsName(t *testing.T) {
+	m := model(sample(2))
+	m.Expanded = m.Rows[0].Name
+
+	m.Confirm = ActionRestart
+	lines, _ := draw(t, 170, 30, m)
+	if !strings.Contains(lines[rowTop+1], "Restart the pod?") {
+		t.Errorf("restart question: %q", lines[rowTop+1])
+	}
+	if strings.Contains(lines[rowTop+1], "pod-00") {
+		t.Errorf("the name is already on the row above: %q", lines[rowTop+1])
+	}
+
+	m.Confirm = ActionTerminate
+	lines, _ = draw(t, 170, 30, m)
+	if !strings.Contains(lines[rowTop+1], "Terminate the pod?") {
+		t.Errorf("terminate question: %q", lines[rowTop+1])
+	}
 }

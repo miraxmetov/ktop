@@ -49,7 +49,6 @@ type Row struct {
 	CPUPct      float64
 	MemPct      float64
 	Worst       float64
-	Problem     bool
 }
 
 type Client struct {
@@ -282,7 +281,7 @@ func FilterLevel(rows []Row, level Level, dimension Dimension) []Row {
 func Filter(rows []Row, query string) []Row {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
-		return rows
+		return append(make([]Row, 0, len(rows)), rows...)
 	}
 	filtered := make([]Row, 0, len(rows))
 	for _, r := range rows {
@@ -370,8 +369,6 @@ func buildRow(pod *corev1.Pod, used map[string]usage, seen podCounter) Row {
 	if row.MemPct > row.Worst {
 		row.Worst = row.MemPct
 	}
-	row.Problem = row.Restarts > 0 || row.OOMs > 0 ||
-		row.Severity == Bad || row.Severity == Warn || row.Worst >= WarnPct
 	return row
 }
 
@@ -414,24 +411,81 @@ func podStatus(pod *corev1.Pod) (string, Severity) {
 }
 
 func Sort(rows []Row) {
+	SortBy(rows, "", OrderNone, OrderAsc)
+}
+
+type Order int
+
+const (
+	OrderNone Order = iota
+	OrderDesc
+	OrderAsc
+)
+
+func SortBy(rows []Row, key string, order, names Order) {
+	byName := func(i, j int) bool {
+		if names == OrderDesc {
+			return rows[i].Name > rows[j].Name
+		}
+		return rows[i].Name < rows[j].Name
+	}
+
+	if key == "" || key == "name" || order == OrderNone {
+		sort.SliceStable(rows, byName)
+		return
+	}
+
 	sort.SliceStable(rows, func(i, j int) bool {
-		a, b := rows[i], rows[j]
-		if a.Problem != b.Problem {
-			return a.Problem
+		a, b := value(rows[i], key), value(rows[j], key)
+		if a == b {
+			return byName(i, j)
 		}
-		if rank(a) != rank(b) {
-			return rank(a) < rank(b)
+		if order == OrderDesc {
+			return a > b
 		}
-		return a.Name < b.Name
+		return a < b
 	})
 }
 
-func rank(r Row) int {
-	switch Classify(r, DimAll) {
-	case LevelCritical:
-		return 0
-	case LevelWarning:
+func value(r Row, key string) float64 {
+	switch key {
+	case "status":
+		return severityRank(r.Severity)
+	case "cpu":
+		if !r.HasCPU {
+			return -1
+		}
+		return r.CPU
+	case "cpu_pct":
+		return r.CPUPct
+	case "mem":
+		if !r.HasMem {
+			return -1
+		}
+		return r.Mem
+	case "mem_pct":
+		return r.MemPct
+	case "restarts":
+		return float64(r.Restarts)
+	case "ooms":
+		return float64(r.OOMs)
+	case "last_restart":
+		if r.LastRestart.IsZero() {
+			return -1
+		}
+		return float64(r.LastRestart.Unix())
+	}
+	return 0
+}
+
+func severityRank(severity Severity) float64 {
+	switch severity {
+	case Bad:
+		return 3
+	case Warn:
+		return 2
+	case Good:
 		return 1
 	}
-	return 2
+	return 0
 }

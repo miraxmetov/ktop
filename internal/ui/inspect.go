@@ -68,12 +68,17 @@ const (
 	logPlaceholder = "Search log stream..."
 )
 
-func InspectRoom(height int) int {
-	room := height - inspectTop - 3
-	if room < 1 {
-		return 1
+func InspectRoom(width, height int) int {
+	return inspectGeom(width, height).room
+}
+
+func MaxInspectOffset(m Model, width, height int) int {
+	g := inspectGeom(width, height)
+	hidden := len(wrap(m.Inspect.Lines(), g.textArea)) - g.room
+	if hidden < 0 {
+		return 0
 	}
-	return room
+	return hidden
 }
 
 type inspectGeometry struct {
@@ -245,8 +250,12 @@ func drawConfig(s tcell.Screen, m Model, g inspectGeometry) {
 		line := lines[offset+i]
 		putSegments(s, x, top+i, g.textArea, configSegments(line, m.Inspect.Format))
 	}
-	if hidden := len(lines) - offset - g.room; hidden > 0 {
-		puts(s, x, top+g.room-1, g.textArea, false, "+"+itoa(hidden)+" more below", styleDim)
+
+	if above := offset; above > 0 {
+		puts(s, g.left.x+2, g.left.y, 0, false, " \u2191"+itoa(above)+" more ", styleDim)
+	}
+	if below := len(lines) - offset - g.room; below > 0 {
+		puts(s, g.left.x+2, g.left.y+g.left.h-1, 0, false, " \u2193"+itoa(below)+" more ", styleDim)
 	}
 }
 

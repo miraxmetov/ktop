@@ -26,6 +26,34 @@ func ExplainPods(err error, namespace, host string) string {
 	return transportText(err, host, fmt.Sprintf("cannot list pods in namespace %s", namespace))
 }
 
+func ExplainWorkloads(err error, namespace string, kind Kind, host string) string {
+	if err == nil {
+		return ""
+	}
+	what := strings.ToLower(kind.String())
+	switch {
+	case apierrors.IsForbidden(err):
+		return fmt.Sprintf("no permission to list %s in namespace %s", what, namespace)
+	case apierrors.IsUnauthorized(err):
+		return "cluster rejected the credentials from your kubeconfig"
+	}
+	return transportText(err, host, fmt.Sprintf("cannot list %s in namespace %s", what, namespace))
+}
+
+func ExplainWorkload(err error, namespace string, kind Kind, name, host string) string {
+	if err == nil {
+		return ""
+	}
+	what := strings.ToLower(strings.TrimSuffix(kind.String(), "s"))
+	switch {
+	case apierrors.IsNotFound(err):
+		return fmt.Sprintf("%s %s is gone from namespace %s", what, name, namespace)
+	case apierrors.IsForbidden(err):
+		return fmt.Sprintf("no permission to read %s %s", what, name)
+	}
+	return transportText(err, host, fmt.Sprintf("cannot read %s %s", what, name))
+}
+
 func ExplainPod(err error, namespace, name, host string) string {
 	if err == nil {
 		return ""

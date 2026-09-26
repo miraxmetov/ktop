@@ -30,7 +30,7 @@ func crashing(name string, uid types.UID, restarts int32, reason string) *corev1
 
 func poll(t *testing.T, client *Client) map[string]Row {
 	t.Helper()
-	res, err := client.Rows(context.Background(), "production")
+	res, err := client.Rows(context.Background(), "production", KindPod)
 	if err != nil {
 		t.Fatalf("Rows: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestCountersKeepNamespacesApart(t *testing.T) {
 	client := NewWithClients(pods, metricsClient())
 
 	poll(t, client)
-	if _, err := client.Rows(context.Background(), "staging"); err != nil {
+	if _, err := client.Rows(context.Background(), "staging", KindPod); err != nil {
 		t.Fatalf("Rows(staging): %v", err)
 	}
 

@@ -1,10 +1,11 @@
 # ktop
 
-A terminal window into one Kubernetes namespace: what its pods are doing right now, what is wrong
-with them, and what you can do about it without leaving the screen.
+A terminal window into one Kubernetes namespace: what its pods and workloads are doing right now,
+what is wrong with them, and what you can do about it without leaving the screen.
 
 It shows CPU and memory against each pod's own limits, restarts and OOM kills, the last exit code
-with its signal decoded and how long ago the pod restarted. It sorts and filters that list, opens
+with its signal decoded and how long ago the pod restarted. The same table also reads deployments,
+replica sets, daemon sets and stateful sets, with every number summed over the pods they own. It sorts and filters that list, opens
 any pod's configuration beside its live log stream, and can restart or delete a pod after asking
 you twice. Namespace and kubeconfig are switched from inside the program.
 
@@ -59,6 +60,7 @@ export KUBECONFIG=~/.kube/prod.yaml
 | Key | Action |
 | --- | --- |
 | `/` | search pods by name |
+| `m` / `M` | choose what the table lists: pods or a kind of workload |
 | `n` / `N` | search and switch namespace |
 | `c` / `C` | change the kubeconfig, with file completion |
 | `Tab` | complete the search box with the highlighted entry |
@@ -75,6 +77,17 @@ export KUBECONFIG=~/.kube/prod.yaml
 The mouse works everywhere: click a search box to open it, click an entry in a list to take it,
 click a column header to sort by it, click a pod name to open its actions, click anywhere else to
 close what is open, and scroll the wheel over the table, a list or the inspect screen.
+
+## What the table lists
+
+A framed box above the counters says what you are looking at, `Pods` to begin with. Click it and
+a menu offers `Deployments`, `ReplicaSets`, `DaemonSets` and `StatefulSets`. Everything else keeps
+working the same way: the same search, the same filters, the same sorting, the same actions.
+
+A workload row carries what its pods add up to. CPU, memory, restarts and OOM kills are summed
+over the pods it owns, `STATUS` reads as `2/3 ready`, and instead of the pod columns `EXIT` and
+`LAST RESTART` you get `CREATED`, the age of the workload itself, and `LAST POD RESTART`, the
+moment its most recently restarted pod went down.
 
 ## The table
 
@@ -131,8 +144,9 @@ Restart and Terminate never fire on the first click. The three lines become `Res
 `[ Yes ]` and `[ Cancel ]`, and only `Yes` deletes the pod: gracefully for Restart, so its
 controller brings it back, and immediately for Terminate, which is what a stuck pod needs.
 
-Inspect gives the pod a screen of its own, split into two framed panes: its configuration on the
-left, its live log stream on the right. Three buttons at the bottom pick how the configuration
+Inspect gives the pod, or the workload, a screen of its own, split into two framed panes: its
+configuration on the left, a live log stream on the right. For a workload the right pane names the
+pod it is streaming and carries a `⇅`: click the title or press `p` to pick another of its pods. Three buttons at the bottom pick how the configuration
 reads: `[ default ]` lists the fields, `[ textual ]` says the same in a few sentences, `[ yaml ]`
 shows the manifest. Each line of the stream carries the time the container printed it, which
 Kubernetes keeps for the lines written before ktop started too. The log pane has its own search

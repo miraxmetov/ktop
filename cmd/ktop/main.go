@@ -136,6 +136,7 @@ type app struct {
 type inspectResult struct {
 	name      string
 	container string
+	pods      []string
 	readable  []string
 	textual   []string
 	yaml      []string
@@ -213,10 +214,11 @@ func resolveNamespace(flag, fromConfig string) string {
 
 func (a *app) fetchPods() {
 	namespace := a.namespace
+	kind := a.model.Kind
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		result, err := a.client.Rows(ctx, namespace)
+		result, err := a.client.Rows(ctx, namespace, kind)
 		a.pods <- podResult{namespace: namespace, result: result, err: err}
 	}()
 }
@@ -295,11 +297,15 @@ func (a *app) run() {
 				a.model.Inspect.Textual = res.textual
 				a.model.Inspect.Yaml = res.yaml
 				a.model.Inspect.Container = res.container
-				a.followLogs(res.name, res.container)
+				a.model.Inspect.LogPods = res.pods
+				if a.model.Inspect.LogPod == "" && len(res.pods) > 0 {
+					a.model.Inspect.LogPod = res.pods[0]
+				}
+				a.followLogs(a.model.Inspect.LogPod, res.container)
 			}
 			a.draw()
 		case line := <-a.logs:
-			if line.pod != a.model.Inspect.Pod || a.model.Screen != ui.ScreenInspect {
+			if line.pod != a.model.Inspect.LogPod || a.model.Screen != ui.ScreenInspect {
 				continue
 			}
 			if line.err != nil {
@@ -402,6 +408,34 @@ func (a *app) focusNamespace() {
 	a.fetchNamespaces()
 }
 
+func (a *app) focusKind() {
+	a.model.Focus = ui.FocusKind
+	a.model.Choice = 0
+	for i, kind := range kube.Kinds() {
+		if kind == a.model.Kind {
+			a.model.Choice = i
+		}
+	}
+}
+
+func (a *app) switchKind(name string) {
+	kind, ok := kube.KindByName(name)
+	a.model.Focus = ui.FocusTable
+	if !ok || kind == a.model.Kind {
+		return
+	}
+
+	a.model.Kind = kind
+	a.model.All = nil
+	a.model.Rows = nil
+	a.model.Expanded = ""
+	a.model.Confirm = ui.ActionNone
+	a.model.Offset = 0
+	a.model.Loaded = false
+	a.model.SortKey, a.model.SortOrder = "", kube.OrderNone
+	a.fetchPods()
+}
+
 func (a *app) focusKubeconfig() {
 	a.model.Focus = ui.FocusKubeconfig
 	a.model.Choice = 0
@@ -469,6 +503,15 @@ func (a *app) applyKubeconfig(path string) {
 func (a *app) applyChoice() {
 	options := a.model.Options()
 	choice := a.model.Choice
+
+	if a.model.Focus == ui.FocusKind {
+		if choice >= 0 && choice < len(options) {
+			a.switchKind(options[choice])
+			return
+		}
+		a.model.Focus = ui.FocusTable
+		return
+	}
 
 	if a.model.Focus == ui.FocusKubeconfig {
 		selected := a.model.PathQuery
@@ -549,17 +592,23 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 	if a.model.Screen == ui.ScreenInspect {
 		switch {
 		case e.Buttons()&tcell.Button1 != 0:
-			switch ui.HitInspect(width, height, x, y) {
+			target, index := ui.HitInspect(*a.model, width, height, x, y)
+			switch target {
 			case ui.HitFormatDefault:
 				a.setFormat(ui.FormatDefault)
 			case ui.HitFormatTextual:
 				a.setFormat(ui.FormatTextual)
 			case ui.HitFormatYAML:
 				a.setFormat(ui.FormatYAML)
+			case ui.HitLogPod:
+				a.model.Inspect.PodPicker = len(a.model.Inspect.LogPods) > 1 && !a.model.Inspect.PodPicker
+			case ui.HitLogPodItem:
+				a.choosePod(index)
 			case ui.HitLogSearch:
 				a.model.Inspect.LogSearch = true
 			case ui.HitConfigPane, ui.HitLogPane:
 				a.model.Inspect.LogSearch = false
+				a.model.Inspect.PodPicker = false
 			}
 		case e.Buttons()&tcell.WheelUp != 0:
 			a.scroll(-1)
@@ -579,6 +628,8 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 			a.focusPods()
 		case ui.HitKubeconfig:
 			a.focusKubeconfig()
+		case ui.HitKindBox:
+			a.focusKind()
 		case ui.HitCritical:
 			a.toggleLevel(kube.LevelCritical)
 		case ui.HitWarning:
@@ -699,6 +750,8 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 			a.focusNamespace()
 		case 'c', 'C':
 			a.focusKubeconfig()
+		case 'm', 'M':
+			a.focusKind()
 		}
 	}
 	return false
@@ -706,6 +759,28 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 
 func (a *app) handleInspectKey(e *tcell.EventKey) bool {
 	width, height := a.screen.Size()
+
+	if a.model.Inspect.PodPicker {
+		switch e.Key() {
+		case tcell.KeyCtrlC:
+			return true
+		case tcell.KeyEscape:
+			a.model.Inspect.PodPicker = false
+		case tcell.KeyEnter:
+			a.choosePod(a.model.Inspect.PodChoice)
+		case tcell.KeyUp:
+			a.model.Inspect.PodChoice--
+		case tcell.KeyDown:
+			a.model.Inspect.PodChoice++
+		}
+		if a.model.Inspect.PodChoice < 0 {
+			a.model.Inspect.PodChoice = 0
+		}
+		if a.model.Inspect.PodChoice >= len(a.model.Inspect.LogPods) {
+			a.model.Inspect.PodChoice = len(a.model.Inspect.LogPods) - 1
+		}
+		return false
+	}
 
 	if a.model.Inspect.LogSearch {
 		switch e.Key() {
@@ -762,6 +837,8 @@ func (a *app) handleInspectKey(e *tcell.EventKey) bool {
 			a.setFormat(ui.FormatTextual)
 		case '/':
 			a.model.Inspect.LogSearch = true
+		case 'p', 'P':
+			a.model.Inspect.PodPicker = len(a.model.Inspect.LogPods) > 1
 		}
 	}
 	return false
@@ -789,6 +866,24 @@ func (a *app) setFormat(format ui.Format) {
 func (a *app) handleInputKey(e *tcell.EventKey) bool {
 	pods := a.model.Focus == ui.FocusPods
 	config := a.model.Focus == ui.FocusKubeconfig
+	kinds := a.model.Focus == ui.FocusKind
+
+	if kinds {
+		switch e.Key() {
+		case tcell.KeyCtrlC:
+			return true
+		case tcell.KeyEscape:
+			a.model.Focus = ui.FocusTable
+		case tcell.KeyEnter, tcell.KeyTab:
+			a.applyChoice()
+		case tcell.KeyUp:
+			a.model.Choice--
+		case tcell.KeyDown:
+			a.model.Choice++
+		}
+		a.model.ClampChoice()
+		return false
+	}
 
 	switch e.Key() {
 	case tcell.KeyCtrlC:
@@ -952,8 +1047,43 @@ func (a *app) openInspect(index int) {
 
 	a.stopStream()
 	a.model.Screen = ui.ScreenInspect
-	a.model.Inspect = ui.Inspection{Pod: name, Loading: true, Format: a.model.Inspect.Format}
+
+	logPod := name
+	pods := []string{name}
+	if a.model.Kind != kube.KindPod {
+		pods = append([]string(nil), a.model.Rows[index].Pods...)
+		logPod = ""
+		if len(pods) > 0 {
+			logPod = pods[0]
+		}
+	}
+
+	a.model.Inspect = ui.Inspection{
+		Pod:     name,
+		LogPod:  logPod,
+		LogPods: pods,
+		Loading: true,
+		Format:  a.model.Inspect.Format,
+	}
 	a.fetchPod(name)
+}
+
+func (a *app) choosePod(index int) {
+	if index < 0 || index >= len(a.model.Inspect.LogPods) {
+		return
+	}
+	name := a.model.Inspect.LogPods[index]
+
+	a.model.Inspect.PodPicker = false
+	a.model.Inspect.PodChoice = index
+	if name == a.model.Inspect.LogPod {
+		return
+	}
+
+	a.model.Inspect.LogPod = name
+	a.model.Inspect.Logs = nil
+	a.model.Inspect.LogErr = ""
+	a.followLogs(name, "")
 }
 
 func (a *app) appendLog(line ui.LogLine) {
@@ -1015,9 +1145,34 @@ func (a *app) closeInspect() {
 
 func (a *app) fetchPod(name string) {
 	namespace := a.namespace
+	kind := a.model.Kind
+	pods := append([]string(nil), a.model.Inspect.LogPods...)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+
+		now := time.Now()
+
+		if kind != kube.KindPod {
+			detail, err := a.client.Workload(ctx, namespace, kind, name)
+			if err != nil {
+				a.inspected <- inspectResult{name: name, err: err}
+				return
+			}
+			body, err := detail.YAML()
+			if err != nil {
+				a.inspected <- inspectResult{name: name, err: err}
+				return
+			}
+			a.inspected <- inspectResult{
+				name:     name,
+				pods:     pods,
+				readable: detail.Describe(pods, now),
+				textual:  detail.Textual(pods, now),
+				yaml:     body,
+			}
+			return
+		}
 
 		pod, err := a.client.Pod(ctx, namespace, name)
 		if err != nil {
@@ -1029,10 +1184,10 @@ func (a *app) fetchPod(name string) {
 			a.inspected <- inspectResult{name: name, err: err}
 			return
 		}
-		now := time.Now()
 		a.inspected <- inspectResult{
 			name:      name,
 			container: kube.FirstContainer(pod),
+			pods:      pods,
 			readable:  kube.Describe(pod, now),
 			textual:   kube.Textual(pod, now),
 			yaml:      body,

@@ -1153,3 +1153,116 @@ func TestPodHeaderReturnsToTheAlphabet(t *testing.T) {
 		t.Fatalf("the next click flips it: %v", a.model.NameOrder)
 	}
 }
+
+func TestClickingTheModeBoxSwitchesKind(t *testing.T) {
+	a := testApp(t, "api-1", "web-1")
+	ui.ApplyFilter(a.model)
+
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.Kind.X+2, g.Kind.Y+1)
+	if a.model.Focus != ui.FocusKind {
+		t.Fatalf("the box must open the menu, got %v", a.model.Focus)
+	}
+
+	press(a, tcell.KeyDown, 0)
+	press(a, tcell.KeyEnter, 0)
+
+	if a.model.Kind != kube.KindDeployment {
+		t.Fatalf("kind after the choice: %v", a.model.Kind)
+	}
+	if a.model.Focus != ui.FocusTable {
+		t.Fatalf("focus must return to the table, got %v", a.model.Focus)
+	}
+	if len(a.model.All) != 0 || a.model.Loaded {
+		t.Fatal("rows of the previous mode must be dropped")
+	}
+
+	select {
+	case res := <-a.pods:
+		if res.namespace != "production" {
+			t.Fatalf("refresh asked for %q", res.namespace)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("switching the mode must ask the cluster again")
+	}
+}
+
+func TestEscapeClosesTheModeMenu(t *testing.T) {
+	a := testApp(t, "api-1")
+	press(a, tcell.KeyRune, 'm')
+	if a.model.Focus != ui.FocusKind {
+		t.Fatalf("m must open the menu, got %v", a.model.Focus)
+	}
+
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Focus != ui.FocusTable || a.model.Kind != kube.KindPod {
+		t.Fatalf("Esc must close it without switching: %v %v", a.model.Focus, a.model.Kind)
+	}
+}
+
+func TestInspectOfAWorkloadOffersItsPods(t *testing.T) {
+	a := testApp(t)
+	a.model.Kind = kube.KindDeployment
+	a.model.All = []kube.Row{{
+		Name:   "api",
+		Status: "2/2 ready",
+		Pods:   []string{"api-abc-1", "api-abc-2"},
+		CPUPct: -1, MemPct: -1, Worst: -1,
+	}}
+	ui.ApplyFilter(a.model)
+
+	click(a, 4, 14)
+	if a.model.Expanded != "api" {
+		t.Fatalf("the deployment must open its actions, got %q", a.model.Expanded)
+	}
+
+	click(a, 4, 15)
+	if a.model.Screen != ui.ScreenInspect {
+		t.Fatalf("Inspect must switch screens, got %v", a.model.Screen)
+	}
+	if a.model.Inspect.Pod != "api" {
+		t.Fatalf("the screen is about the workload: %q", a.model.Inspect.Pod)
+	}
+	if len(a.model.Inspect.LogPods) != 2 || a.model.Inspect.LogPod != "api-abc-1" {
+		t.Fatalf("the log pane must start on the first pod: %v %q",
+			a.model.Inspect.LogPods, a.model.Inspect.LogPod)
+	}
+
+	select {
+	case res := <-a.inspected:
+		if res.name != "api" {
+			t.Fatalf("the fetch was asked for %q", res.name)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Inspect must fetch the workload")
+	}
+}
+
+func TestChoosingAnotherPodRestartsTheStream(t *testing.T) {
+	a := testApp(t)
+	a.model.Screen = ui.ScreenInspect
+	a.model.Inspect = ui.Inspection{
+		Pod:     "api",
+		LogPod:  "api-abc-1",
+		LogPods: []string{"api-abc-1", "api-abc-2"},
+		Logs:    []ui.LogLine{{Text: "old line"}},
+	}
+
+	press(a, tcell.KeyRune, 'p')
+	if !a.model.Inspect.PodPicker {
+		t.Fatal("p must open the pod picker")
+	}
+
+	press(a, tcell.KeyDown, 0)
+	press(a, tcell.KeyEnter, 0)
+
+	if a.model.Inspect.LogPod != "api-abc-2" {
+		t.Fatalf("the choice must switch the stream: %q", a.model.Inspect.LogPod)
+	}
+	if a.model.Inspect.PodPicker {
+		t.Fatal("the picker must close after choosing")
+	}
+	if len(a.model.Inspect.Logs) != 0 {
+		t.Fatal("lines of the previous pod must be dropped")
+	}
+}

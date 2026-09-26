@@ -110,7 +110,7 @@ func testRows(t *testing.T) []Row {
 	)
 
 	client := NewWithClients(pods, metrics)
-	res, err := client.Rows(context.Background(), "production")
+	res, err := client.Rows(context.Background(), "production", KindPod)
 	if err != nil {
 		t.Fatalf("Rows: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestRowsWithoutMetrics(t *testing.T) {
 		Name: "app", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
 	})
 	client := NewWithClients(k8sfake.NewSimpleClientset(healthy), metricsClient())
-	res, err := client.Rows(context.Background(), "production")
+	res, err := client.Rows(context.Background(), "production", KindPod)
 	if err != nil {
 		t.Fatalf("Rows: %v", err)
 	}

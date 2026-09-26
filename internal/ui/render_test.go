@@ -98,9 +98,9 @@ func TestDrawHeaderShowsNamespaceAndSearchBars(t *testing.T) {
 			t.Errorf("line %d must be the bottom of a frame: %q", y, lines[y])
 		}
 	}
-	if len(lines[lineNs]) >= len(lines[linePods]) {
-		t.Errorf("the namespace frame must be the narrower one: %d vs %d",
-			len(lines[lineNs]), len(lines[linePods]))
+	g := geom(model(sample(3)), 170, 40)
+	if g.nsBox.w >= g.podBox.w {
+		t.Errorf("the namespace frame must be the narrower one: %d vs %d", g.nsBox.w, g.podBox.w)
 	}
 }
 
@@ -715,8 +715,9 @@ func TestStatusCountersAreCentredAndColoured(t *testing.T) {
 
 	lines, screen := draw(t, width, 30, m)
 	status := lines[lineStatus]
+	g := geom(m, width, 30)
 
-	block := "6 critical / 0 warning   issues regarding status / cpu / memory"
+	block := "Facing 6 critical / 0 warning regarding status / cpu / memory"
 	start := strings.Index(status, block)
 	if start < 0 {
 		t.Fatalf("status line: %q", status)
@@ -727,12 +728,14 @@ func TestStatusCountersAreCentredAndColoured(t *testing.T) {
 	}
 
 	cells, w, _ := screen.GetContents()
-	if fg, _, _ := cells[lineStatus*w+start].Style.Decompose(); fg != tcell.ColorRed {
+	if fg, _, _ := cells[lineStatus*w+g.critical.x].Style.Decompose(); fg != tcell.ColorRed {
 		t.Errorf("critical must be red, got %v", fg)
 	}
-	warnColumn := start + strings.Index(block, "0 warning")
-	if fg, _, _ := cells[lineStatus*w+warnColumn].Style.Decompose(); fg != warnColor {
+	if fg, _, _ := cells[lineStatus*w+g.warning.x].Style.Decompose(); fg != warnColor {
 		t.Errorf("warning must keep its amber colour even at zero, got %v", fg)
+	}
+	if fg, _, _ := cells[lineStatus*w+start].Style.Decompose(); fg != tcell.ColorGray {
+		t.Errorf("the word Facing stays quiet, got %v", fg)
 	}
 }
 
@@ -898,7 +901,7 @@ func TestDimensionsAreDrawnAndClickable(t *testing.T) {
 	m := levelled()
 	lines, _ := draw(t, 170, 30, m)
 
-	if !strings.Contains(lines[lineStatus], "issues regarding status / cpu / memory") {
+	if !strings.Contains(lines[lineStatus], "regarding status / cpu / memory") {
 		t.Fatalf("status line: %q", lines[lineStatus])
 	}
 
@@ -1331,7 +1334,7 @@ func TestInspectFormatButtons(t *testing.T) {
 		{"[ yaml ]", HitFormatYAML},
 	} {
 		x := strings.Index(buttons, c.label) + 2
-		if got := HitInspect(140, 28, x, 26); got != c.target {
+		if got, _ := HitInspect(m, 140, 28, x, 26); got != c.target {
 			t.Errorf("click on %s: %v", c.label, got)
 		}
 	}
@@ -1374,7 +1377,7 @@ func TestInspectLogSearchLivesInsideTheLogPane(t *testing.T) {
 		t.Error("the search box must stay inside the pane, not below it")
 	}
 
-	if got := HitInspect(140, 28, g.search.x+2, g.search.y); got != HitLogSearch {
+	if got, _ := HitInspect(m, 140, 28, g.search.x+2, g.search.y); got != HitLogSearch {
 		t.Errorf("click on the search box: %v", got)
 	}
 
@@ -2068,5 +2071,122 @@ func TestConfirmationAsksAboutThePodWithoutItsName(t *testing.T) {
 	lines, _ = draw(t, 170, 30, m)
 	if !strings.Contains(lines[rowTop+1], "Terminate the pod?") {
 		t.Errorf("terminate question: %q", lines[rowTop+1])
+	}
+}
+
+func TestKindBoxShowsAndOffersTheModes(t *testing.T) {
+	m := model(sample(2))
+	lines, _ := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+
+	box := lines[g.kindBox.y+1]
+	if !strings.Contains(box, "Pods") {
+		t.Errorf("the box must name the current mode: %q", box)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(lines[g.kindBox.y]), "\u250c") {
+		t.Errorf("the mode must sit in a frame: %q", lines[g.kindBox.y])
+	}
+	if g.kindBox.y+2 >= lineStatus {
+		t.Error("the frame must close above the counters line")
+	}
+
+	if target, _ := Hit(m, 170, 30, g.kindBox.x+2, g.kindBox.y+1); target != HitKindBox {
+		t.Errorf("click on the mode box: %v", target)
+	}
+
+	m.Focus = FocusKind
+	listed := m.Options()
+	want := []string{"Pods", "Deployments", "ReplicaSets", "DaemonSets", "StatefulSets"}
+	if len(listed) != len(want) {
+		t.Fatalf("the menu must offer every kind: %v", listed)
+	}
+	for i := range want {
+		if listed[i] != want[i] {
+			t.Errorf("menu order: %v", listed)
+		}
+	}
+
+	open, _ := draw(t, 170, 30, m)
+	body := strings.Join(open[g.kindBox.y:g.kindBox.y+9], "\n")
+	for _, name := range want {
+		if !strings.Contains(body, name) {
+			t.Errorf("the open menu misses %q:\n%s", name, body)
+		}
+	}
+}
+
+func TestWorkloadColumnsReplaceThePodOnes(t *testing.T) {
+	rows := sample(2)
+	rows[0].Created = time.Now().Add(-50 * time.Hour)
+	rows[0].LastRestart = time.Now().Add(-90 * time.Minute)
+
+	m := model(rows)
+	m.Kind = kube.KindDeployment
+	lines, _ := draw(t, 200, 30, m)
+	header := lines[lineHeader]
+
+	if !strings.Contains(header, "DEPLOYMENT") {
+		t.Errorf("the name column must follow the mode: %q", header)
+	}
+	for _, want := range []string{"CREATED", "LAST POD RESTART"} {
+		if !strings.Contains(header, want) {
+			t.Errorf("header misses %q: %q", want, header)
+		}
+	}
+	if strings.Contains(header, "EXIT") {
+		t.Errorf("EXIT belongs to pods only: %q", header)
+	}
+	if strings.Count(header, "LAST RESTART") != 0 && !strings.Contains(header, "LAST POD RESTART") {
+		t.Errorf("LAST RESTART must be replaced: %q", header)
+	}
+
+	row := lines[rowTop]
+	if !strings.Contains(row, "2d2h ago") {
+		t.Errorf("created must read as an age: %q", row)
+	}
+	if !strings.Contains(row, "1h30m ago (at ") {
+		t.Errorf("the last pod restart keeps the pod format: %q", row)
+	}
+}
+
+func TestLogPaneNamesItsPod(t *testing.T) {
+	m := inspecting()
+	m.Inspect.LogPod = "api-abc-1"
+	m.Inspect.LogPods = []string{"api-abc-1", "api-abc-2"}
+
+	lines, _ := draw(t, 140, 28, m)
+	if !strings.Contains(lines[inspectTop], "logs of api-abc-1") {
+		t.Errorf("the pane must name the pod it streams: %q", lines[inspectTop])
+	}
+	if !strings.Contains(lines[inspectTop], sortBoth) {
+		t.Errorf("with several pods it must look pickable: %q", lines[inspectTop])
+	}
+
+	g := inspectGeomFor(140, 28, len(m.Inspect.LogPods))
+	if target, _ := HitInspect(m, 140, 28, g.podPick.x+2, g.podPick.y); target != HitLogPod {
+		t.Errorf("click on the pane title: %v", target)
+	}
+
+	m.Inspect.PodPicker = true
+	picker, _ := draw(t, 140, 28, m)
+	body := strings.Join(picker[inspectTop:inspectTop+5], "\n")
+	for _, name := range m.Inspect.LogPods {
+		if !strings.Contains(body, name) {
+			t.Errorf("the picker misses %q:\n%s", name, body)
+		}
+	}
+	if target, index := HitInspect(m, 140, 28, g.podList.x+3, g.podList.y+2); target != HitLogPodItem || index != 1 {
+		t.Errorf("click on the second pod: %v %d", target, index)
+	}
+}
+
+func TestSinglePodPaneStaysPlain(t *testing.T) {
+	m := inspecting()
+	m.Inspect.LogPod = "api-worker-1"
+	m.Inspect.LogPods = []string{"api-worker-1"}
+
+	lines, _ := draw(t, 140, 28, m)
+	if strings.Contains(lines[inspectTop], sortBoth) {
+		t.Errorf("one pod means nothing to pick: %q", lines[inspectTop])
 	}
 }

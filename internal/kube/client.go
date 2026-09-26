@@ -49,6 +49,10 @@ type Row struct {
 	CPUPct      float64
 	MemPct      float64
 	Worst       float64
+	Created     time.Time
+	Ready       int
+	Desired     int
+	Pods        []string
 }
 
 type Client struct {
@@ -168,7 +172,7 @@ func (c *Client) Namespaces(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-func (c *Client) Rows(ctx context.Context, namespace string) (Result, error) {
+func (c *Client) Rows(ctx context.Context, namespace string, kind Kind) (Result, error) {
 	var result Result
 
 	pods, err := c.pods.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
@@ -202,9 +206,38 @@ func (c *Client) Rows(ctx context.Context, namespace string) (Result, error) {
 		pod := &pods.Items[i]
 		rows = append(rows, buildRow(pod, used, observed[identity(pod)]))
 	}
+
+	if kind != KindPod {
+		rows, err = c.group(ctx, namespace, kind, pods.Items, rows)
+		if err != nil {
+			return result, errors.New(ExplainWorkloads(err, namespace, kind, c.Host))
+		}
+	}
+
 	Sort(rows)
 	result.Rows = rows
 	return result, nil
+}
+
+func (c *Client) group(ctx context.Context, namespace string, kind Kind,
+	pods []corev1.Pod, rows []Row) ([]Row, error) {
+
+	items, err := c.workloads(ctx, namespace, kind)
+	if err != nil {
+		return nil, err
+	}
+	replicaSets, err := c.ownerIndex(ctx, namespace, kind)
+	if err != nil {
+		return nil, err
+	}
+
+	owners := make(map[string][]int, len(items))
+	for i := range pods {
+		if name := ownerOf(&pods[i], kind, replicaSets); name != "" {
+			owners[name] = append(owners[name], i)
+		}
+	}
+	return aggregate(items, rows, owners), nil
 }
 
 type Level int

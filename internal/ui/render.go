@@ -41,6 +41,7 @@ const (
 	FocusPods
 	FocusNamespace
 	FocusKubeconfig
+	FocusKind
 )
 
 type Target int
@@ -56,6 +57,7 @@ const (
 	HitDimCPU
 	HitDimMemory
 	HitPodName
+	HitKindBox
 	HitColumn
 	HitActionInspect
 	HitActionRestart
@@ -66,6 +68,8 @@ const (
 	HitFormatTextual
 	HitFormatYAML
 	HitLogSearch
+	HitLogPod
+	HitLogPodItem
 	HitLogPane
 	HitConfigPane
 	HitDropdown
@@ -118,6 +122,7 @@ type Model struct {
 	Err            string
 	Offset         int
 	Tick           int
+	Kind           kube.Kind
 	SortKey        string
 	SortOrder      kube.Order
 	NameOrder      kube.Order
@@ -202,6 +207,12 @@ func (m *Model) Options() []string {
 		return m.PodMatches()
 	case FocusKubeconfig:
 		return m.PathOptions
+	case FocusKind:
+		names := make([]string, 0, len(kube.Kinds()))
+		for _, kind := range kube.Kinds() {
+			names = append(names, kind.String())
+		}
+		return names
 	}
 	return nil
 }
@@ -291,6 +302,38 @@ var columns = []column{
 		}
 		return "", styleBold
 	}},
+}
+
+var workloadColumns = []column{
+	{key: "created", title: "CREATED", width: 14, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
+		if r.Created.IsZero() {
+			return "-", styleDim
+		}
+		return "", styleBase
+	}},
+	{key: "last_restart", title: "LAST POD RESTART", width: 24, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
+		if r.LastRestart.IsZero() {
+			return "-", styleDim
+		}
+		return "", styleBold
+	}},
+}
+
+func columnsFor(kind kube.Kind) []column {
+	base := make([]column, 0, len(columns))
+	for _, c := range columns {
+		if kind != kube.KindPod && (c.key == "exit" || c.key == "last_restart") {
+			continue
+		}
+		if c.key == "name" {
+			c.title = kind.Column()
+		}
+		base = append(base, c)
+	}
+	if kind == kube.KindPod {
+		return base
+	}
+	return append(base, workloadColumns...)
 }
 
 var dropOrder = []string{"last_restart", "exit", "ooms", "cpu", "mem", "restarts", "mem_pct", "cpu_pct", "status"}
@@ -419,6 +462,7 @@ type geometry struct {
 	nsInput   rect
 	podInput  rect
 	kubeInput rect
+	kindBox   rect
 	critical  rect
 	warning   rect
 	dimStatus rect
@@ -469,8 +513,7 @@ func boxWidthFor(total, share, low, high int) int {
 }
 
 func geom(m Model, width, height int) geometry {
-	cols := make([]column, len(columns))
-	copy(cols, columns)
+	cols := columnsFor(m.Kind)
 
 	for _, key := range dropOrder {
 		if fixedWidth(cols)+minName < width {
@@ -530,12 +573,16 @@ func geom(m Model, width, height int) geometry {
 	}
 	g.kubeInput = rect{x: kubeX, y: lineTitle, w: kubeWidth, h: 1}
 
+	kindText := m.Kind.String()
+	kindWidth := len([]rune(kindText)) + 6
+	g.kindBox = rect{x: max(0, (total-kindWidth)/2), y: nsBoxTop, w: kindWidth, h: 3}
+
 	crit, warn := m.Counts()
 	critText := fmt.Sprintf("%d critical", crit)
 	warnText := fmt.Sprintf("%d warning", warn)
-	groupWidth := len(critText) + 3 + len(warnText) + len(dimensionPrefix) +
+	groupWidth := len(facingPrefix) + len(critText) + 3 + len(warnText) + len(dimensionPrefix) +
 		len("status") + 3 + len("cpu") + 3 + len("memory")
-	x := max(0, (total-groupWidth)/2)
+	x := max(0, (total-groupWidth)/2) + len(facingPrefix)
 
 	g.critical = rect{x: x, y: lineStatus, w: len(critText), h: 1}
 	x += len(critText) + 3
@@ -555,6 +602,8 @@ func geom(m Model, width, height int) geometry {
 			anchor = g.podBox
 		case FocusKubeconfig:
 			anchor = g.kubeInput
+		case FocusKind:
+			anchor = g.kindBox
 		}
 		rows := len(g.options)
 		if rows > dropMax {
@@ -653,6 +702,7 @@ type Rect struct {
 }
 
 type Layout struct {
+	Kind      Rect
 	Critical  Rect
 	Warning   Rect
 	DimStatus Rect
@@ -689,6 +739,7 @@ func Geometry(m Model, width, height int) Layout {
 
 	return Layout{
 		Columns:   columns,
+		Kind:      Rect{X: g.kindBox.x, Y: g.kindBox.y, W: g.kindBox.w, H: g.kindBox.h},
 		Critical:  Rect{X: g.critical.x, Y: g.critical.y, W: g.critical.w, H: g.critical.h},
 		Warning:   Rect{X: g.warning.x, Y: g.warning.y, W: g.warning.w, H: g.warning.h},
 		DimStatus: Rect{X: g.dimStatus.x, Y: g.dimStatus.y, W: g.dimStatus.w, H: g.dimStatus.h},
@@ -715,6 +766,9 @@ func Hit(m Model, width, height, x, y int) (Target, int) {
 	}
 	if g.kubeInput.contains(x, y) {
 		return HitKubeconfig, 0
+	}
+	if g.kindBox.contains(x, y) {
+		return HitKindBox, 0
 	}
 	if g.critical.contains(x, y) {
 		return HitCritical, 0
@@ -1063,6 +1117,12 @@ func Draw(s tcell.Screen, m Model) {
 
 	crit, warn := m.Counts()
 
+	drawBox(s, g.kindBox, m.Focus == FocusKind)
+	puts(s, g.kindBox.x+3, nsBoxTop+1, g.kindBox.w-6, false, m.Kind.String(),
+		pickStyle(styleChoice, m.Focus == FocusKind))
+
+	puts(s, g.critical.x-len(facingPrefix), lineStatus, 0, false, facingPrefix, styleDim)
+
 	message, messageStyle := m.Note, styleWarn
 	if m.Err != "" {
 		message, messageStyle = m.Err, styleBad
@@ -1143,6 +1203,9 @@ func Draw(s tcell.Screen, m Model) {
 			if c.key == "last_restart" && !row.LastRestart.IsZero() {
 				text = RestartText(row.LastRestart, now)
 			}
+			if c.key == "created" && !row.Created.IsZero() {
+				text = Ago(now.Sub(row.Created)) + " ago"
+			}
 			if c.key == "name" {
 				if row.Name == m.Expanded {
 					text = marqueeText(text, g.widths[ci], m.Tick)
@@ -1221,7 +1284,10 @@ func justify(items []string, width int) string {
 	return line.String()
 }
 
-const dimensionPrefix = "   issues regarding "
+const (
+	dimensionPrefix = " regarding "
+	facingPrefix    = "Facing "
+)
 
 func pickStyle(base tcell.Style, active bool) tcell.Style {
 	if active {

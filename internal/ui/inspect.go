@@ -34,6 +34,10 @@ type Inspection struct {
 	LogQuery  string
 	LogErr    string
 	LogSearch bool
+	LogPods   []string
+	LogPod    string
+	PodPicker bool
+	PodChoice int
 }
 
 func (i *Inspection) Lines() []string {
@@ -89,12 +93,18 @@ type inspectGeometry struct {
 	dflt     rect
 	textual  rect
 	yaml     rect
+	podPick  rect
+	podList  rect
 	room     int
 	logRoom  int
 	textArea int
 }
 
 func inspectGeom(width, height int) inspectGeometry {
+	return inspectGeomFor(width, height, 0)
+}
+
+func inspectGeomFor(width, height, pods int) inspectGeometry {
 	paneTop := inspectTop
 	paneHeight := height - paneTop - 2
 	if paneHeight < 5 {
@@ -122,7 +132,18 @@ func inspectGeom(width, height int) inspectGeometry {
 	buttonsX := max(0, (width-buttons)/2)
 	buttonsY := height - 2
 
+	podList := rect{}
+	if pods > 0 {
+		rows := pods
+		if rows > dropMax {
+			rows = dropMax
+		}
+		podList = rect{x: right.x + 1, y: right.y + 1, w: right.w - 2, h: rows + 2}
+	}
+
 	return inspectGeometry{
+		podPick:  rect{x: right.x + 2, y: right.y, w: right.w - 4, h: 1},
+		podList:  podList,
 		left:     left,
 		right:    right,
 		logs:     rect{x: right.x + 2, y: right.y + 1, w: right.w - 4, h: logRoom},
@@ -187,7 +208,7 @@ func wrap(lines []string, width int) []string {
 
 func drawInspect(s tcell.Screen, m Model) {
 	width, height := s.Size()
-	g := inspectGeom(width, height)
+	g := inspectGeomFor(width, height, len(m.Inspect.LogPods))
 
 	title := m.Inspect.Pod
 	if title == "" {
@@ -196,11 +217,13 @@ func drawInspect(s tcell.Screen, m Model) {
 	puts(s, max(0, (width-len([]rune(title)))/2), 0, 0, false, title, styleAccent.Bold(true))
 
 	drawPane(s, g.left, "config")
-	drawPane(s, g.right, "logs"+containerSuffix(m))
+	drawPane(s, g.right, logTitle(m))
 	drawLogSeparator(s, g)
 
 	drawConfig(s, m, g)
 	drawLogs(s, m, g)
+
+	drawPodPicker(s, m, g)
 
 	puts(s, g.dflt.x, g.dflt.y, 0, false, defaultLabel, pickStyle(styleChoice, m.Inspect.Format == FormatDefault))
 	puts(s, g.textual.x, g.textual.y, 0, false, textualLabel, pickStyle(styleChoice, m.Inspect.Format == FormatTextual))
@@ -214,11 +237,15 @@ func drawInspect(s tcell.Screen, m Model) {
 	s.Show()
 }
 
-func containerSuffix(m Model) string {
-	if m.Inspect.Container == "" {
-		return ""
+func logTitle(m Model) string {
+	name := m.Inspect.LogPod
+	if name == "" {
+		name = m.Inspect.Pod
 	}
-	return ": " + m.Inspect.Container
+	if len(m.Inspect.LogPods) > 1 {
+		return "logs of " + name + " " + sortBoth
+	}
+	return "logs of " + name
 }
 
 func drawLogSeparator(s tcell.Screen, g inspectGeometry) {
@@ -492,6 +519,34 @@ func logSegments(line LogLine, query string) []segment {
 	return out
 }
 
+func drawPodPicker(s tcell.Screen, m Model, g inspectGeometry) {
+	if !m.Inspect.PodPicker || g.podList.h == 0 {
+		return
+	}
+
+	box := g.podList
+	rows := box.h - 2
+	offset := 0
+	if m.Inspect.PodChoice >= rows {
+		offset = m.Inspect.PodChoice - rows + 1
+	}
+
+	line := repeat("─", box.w-2)
+	puts(s, box.x, box.y, 0, false, "┌"+line+"┐", styleChoice)
+	puts(s, box.x, box.y+box.h-1, 0, false, "└"+line+"┘", styleChoice)
+
+	for i := 0; i < rows && offset+i < len(m.Inspect.LogPods); i++ {
+		y := box.y + 1 + i
+		style := styleDropdown
+		if offset+i == m.Inspect.PodChoice {
+			style = styleChosen
+		}
+		puts(s, box.x, y, 0, false, "│", styleChoice)
+		puts(s, box.x+1, y, box.w-2, false, " "+m.Inspect.LogPods[offset+i], style)
+		puts(s, box.x+box.w-1, y, 0, false, "│", styleChoice)
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
@@ -504,22 +559,37 @@ func itoa(n int) string {
 	return digits
 }
 
-func HitInspect(width, height, x, y int) Target {
-	g := inspectGeom(width, height)
+func HitInspect(m Model, width, height, x, y int) (Target, int) {
+	g := inspectGeomFor(width, height, len(m.Inspect.LogPods))
+
+	if m.Inspect.PodPicker && g.podList.h > 0 && g.podList.contains(x, y) {
+		rows := g.podList.h - 2
+		offset := 0
+		if m.Inspect.PodChoice >= rows {
+			offset = m.Inspect.PodChoice - rows + 1
+		}
+		index := y - g.podList.y - 1 + offset
+		if index >= 0 && index < len(m.Inspect.LogPods) {
+			return HitLogPodItem, index
+		}
+		return HitNone, 0
+	}
 
 	switch {
 	case g.dflt.contains(x, y):
-		return HitFormatDefault
+		return HitFormatDefault, 0
 	case g.textual.contains(x, y):
-		return HitFormatTextual
+		return HitFormatTextual, 0
 	case g.yaml.contains(x, y):
-		return HitFormatYAML
+		return HitFormatYAML, 0
+	case g.podPick.contains(x, y):
+		return HitLogPod, 0
 	case y >= g.search.y-1 && y <= g.search.y+1 && x >= g.right.x && x < g.right.x+g.right.w:
-		return HitLogSearch
+		return HitLogSearch, 0
 	case g.right.contains(x, y):
-		return HitLogPane
+		return HitLogPane, 0
 	case g.left.contains(x, y):
-		return HitConfigPane
+		return HitConfigPane, 0
 	}
-	return HitNone
+	return HitNone, 0
 }

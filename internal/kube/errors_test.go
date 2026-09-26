@@ -151,7 +151,7 @@ func TestRowsReportsForbiddenPods(t *testing.T) {
 	client := NewWithClients(pods, metricsClient())
 	client.Host = "https://api.example.com"
 
-	_, err := client.Rows(context.Background(), "production")
+	_, err := client.Rows(context.Background(), "production", KindPod)
 	if err == nil {
 		t.Fatal("want an error")
 	}
@@ -167,7 +167,7 @@ func TestRowsReportsMissingMetricsAsNote(t *testing.T) {
 	metrics := metricsfakeForbidden()
 	client := NewWithClients(k8sfake.NewSimpleClientset(healthy), metrics)
 
-	res, err := client.Rows(context.Background(), "production")
+	res, err := client.Rows(context.Background(), "production", KindPod)
 	if err != nil {
 		t.Fatalf("pods must still be listed: %v", err)
 	}

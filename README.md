@@ -52,6 +52,8 @@ ktop -c staging -n web    # another kube context
 A word after the command opens ktop on a scope instead of pods. Workloads: `po`, `d`, `rs`, `ds`
 and `sts` for pods, deployments, replica sets, daemon sets and stateful sets. The cluster around
 them: `no`, `ns`, `quota` and `limits` for nodes, namespaces, resource quotas and limit ranges.
+Traffic: `svc`, `eps`, `ing`, `netpol` and `hr` for services, endpoint slices, ingresses, network
+policies and HTTP routes.
 `ktop panic` opens the deployments that are critical right now, and `ktop status` prints the
 status line for the namespace and exits, which is what a script or a prompt wants:
 
@@ -59,6 +61,7 @@ status line for the namespace and exits, which is what a script or a prompt want
 ktop d                    # open on deployments
 ktop ds production        # daemon sets of a namespace
 ktop no                   # nodes, with a meter per node
+ktop svc                  # services, side by side with their configuration
 ktop panic                # critical deployments, filtered on arrival
 ktop status               # a short report on the namespace, ending in the status line
 ```
@@ -105,6 +108,7 @@ export KUBECONFIG=~/.kube/prod.yaml
 | `Esc` | step back: the open question, the open actions, the search field, the filters, then quit |
 | `Ctrl+U` | clear the current search field |
 | `←` `→` | step between the scope buttons; `Enter` or `↓` opens the menu of the one you are on |
+| `Ctrl+Y` | copy: the name under the open actions, or the configuration you are reading |
 | `↑` `↓` / `k` `j` | pick from the open list, scroll the table, or scroll the log stream while inspecting |
 | `Shift+↑` `↓` | scroll the configuration pane while inspecting |
 | `PgUp` `PgDn` | scroll a page |
@@ -118,8 +122,8 @@ close what is open, and scroll the wheel over the table, a list or the inspect s
 
 ## What the table lists
 
-A row of two buttons above the status line says what you are looking at: `Workloads` and
-`Cluster`. Click one and its menu opens, or walk the row with `←` and `→` and open it with `Enter`
+A row of buttons above the status line says what you are looking at: `Workloads`, `Cluster` and
+`Traffic`. Click one and its menu opens, or walk the row with `←` and `→` and open it with `Enter`
 or `↓`, then pick the kind with `↑` and `↓`. The menu carries a tick beside the kind you are on; the button that
 holds the current kind is framed in green and names it, so a glance tells you where you are.
 Everything else keeps working the same way: the same search, the same filters, the same sorting,
@@ -135,6 +139,15 @@ recently restarted pod went down.
 critical/warning machinery reads them, because each has a number with a ceiling: a node measures
 against what it can allocate, a quota against what it allows.
 
+`Traffic` covers services, endpoint slices, ingresses, network policies and Gateway API HTTP
+routes, and it answers one question: can traffic reach what it is meant to reach. A service counts the endpoints behind it,
+`1/2 endpoints`, and turns red when nothing answers; an ingress follows its backends and says so
+when one of them has nothing ready behind it; a network policy counts the pods it holds and warns
+when it holds none, because a policy that matches nothing shapes nothing; an HTTP route reads the
+conditions its gateway wrote back and turns red when the gateway refused it. HTTP routes are read
+through the API server's own discovery, so a cluster without the Gateway API simply reports that
+it serves none.
+
 A node row is drawn the way htop draws a gauge: CPU, memory and pods each get a meter that fills
 with the load and takes its colour from it, green below three quarters, amber from there, red
 from nine tenths, with the figures inside the bar. Inspect gives the same meters, its conditions,
@@ -142,6 +155,20 @@ its addresses, its taints and the machine underneath. Quotas read as used agains
 resource, meters included; namespaces count the pods they hold; limit ranges say what they cap and
 what a container gets when it asks for nothing. Nothing in this group is restarted or deleted from
 ktop, so these rows offer `Inspect` alone.
+
+## Reading traffic
+
+The `Traffic` group drops the wide table for a pair of panes: the names on the left, a quarter of
+the width, and everything known about the chosen one on the right. `↑` and `↓` walk the list and
+the right pane follows; a click picks a name; the wheel scrolls whichever pane it is over and
+`PgUp` `PgDn` page through the configuration.
+
+The right pane is rebuilt on every refresh, so it follows the cluster while you read it. It opens
+with what matters for debugging, before the configuration itself: where the
+service is reachable, how many endpoints are ready, which pods a policy holds, and a `mind that`
+line whenever something is wrong, like a selector that matches nothing. The configuration under it
+reads in the same three formats as Inspect, `[ default ]`, `[ textual ]` and `[ yaml ]`, with the
+same colouring, and `Shift+←` `Shift+→` or a click on the buttons moves between them.
 
 ## The table
 
@@ -203,8 +230,17 @@ any search shows everything ktop can see and narrows the list as you type.
 
 ## Acting on a pod or a workload
 
-Click a name and three actions open under it, stacked inside the first column and pushing the rest
-of the table down: `[ Inspect ]`, `[ Restart ]`, `[ Terminate ]`.
+Click a name and its actions open under it, stacked inside the first column and pushing the rest
+of the table down: `[ Copy ]`, `[ Inspect ]`, `[ Restart ]`, `[ Terminate ]`.
+
+`Copy` puts the name on your clipboard, which is the way to get it out of ktop, since a terminal
+gives you no selection of your own. The button answers for itself: it turns into a green tick for
+three seconds, ignores further clicks while it rests, and goes back to the word when it is ready
+to copy again. It uses `pbcopy`, `wl-copy`, `xclip` or `xsel` when one is
+installed, and falls back to the terminal's own copy sequence, so it also works over ssh in the
+terminals that support it. The Inspect screen and the traffic pane carry a `[ copy ]` button of
+their own that takes the whole configuration in the format you are reading, and `Ctrl+Y` does the
+same from the keyboard.
 
 Restart and Terminate never fire on the first click. The three lines become `Are you sure?`,
 `[ Yes ]` and `[ Cancel ]`, and only `Yes` acts. What acting means follows the row. A pod is
@@ -267,10 +303,13 @@ reports the refusal, `no permission to restart deployment api`, and changes noth
 ## Development
 
 ```sh
-go test ./...
-go build -o dist/ktop ./cmd/ktop
+make test                  # go vet and the whole suite
+make install               # build and drop the binary in ~/.local/bin
 go install github.com/miraxmetov/ktop/cmd/ktop@latest
 ```
+
+`make install` writes the same binary the tests ran against, which is the way to try a change
+without wondering whether the ktop on your PATH is the one you just built.
 
 Releases are cut by pushing a tag; GitHub Actions runs goreleaser, which cross-compiles all four
 targets, writes `checksums.txt` and publishes the archives that `install.sh` downloads.

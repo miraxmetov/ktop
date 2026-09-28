@@ -18,6 +18,11 @@ _ktop_scopes() {
         'ns:open on namespaces'
         'quota:open on resource quotas'
         'limits:open on limit ranges'
+        'svc:open on services'
+        'eps:open on endpoint slices'
+        'ing:open on ingresses'
+        'netpol:open on network policies'
+        'hr:open on HTTP routes'
         'panic:open on critical deployments'
         'status:print the status line and exit'
     )

@@ -1217,7 +1217,7 @@ func TestActionsStackInsideThePodColumn(t *testing.T) {
 		t.Fatalf("the pod stays where it was: %q", lines[rowTop+1])
 	}
 
-	for i, want := range []string{"[ Inspect ]", "[ Restart ]", "[ Terminate ]"} {
+	for i, want := range []string{"[ Copy ]", "[ Inspect ]", "[ Restart ]", "[ Terminate ]"} {
 		row := []rune(lines[rowTop+2+i])
 		cell := string(row[xs[0] : xs[0]+g.widths[0]])
 		if !strings.Contains(cell, want) {
@@ -1233,8 +1233,8 @@ func TestActionsStackInsideThePodColumn(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(lines[rowTop+5], "pod-02") {
-		t.Errorf("the rest of the table shifts down by three: %q", lines[rowTop+5])
+	if !strings.Contains(lines[rowTop+6], "pod-02") {
+		t.Errorf("the rest of the table shifts down by four: %q", lines[rowTop+6])
 	}
 }
 
@@ -1244,7 +1244,7 @@ func TestActionsHitTesting(t *testing.T) {
 	g := geom(m, 170, 30)
 	xs := columnXs(g.widths)
 
-	for i, want := range []Target{HitActionInspect, HitActionRestart, HitActionTerminate} {
+	for i, want := range []Target{HitCopyName, HitActionInspect, HitActionRestart, HitActionTerminate} {
 		if target, index := Hit(m, 170, 30, xs[0]+4, rowTop+1+i); target != want || index != 0 {
 			t.Errorf("line %d: got %v %d, want %v", i, target, index, want)
 		}
@@ -2120,6 +2120,9 @@ func TestEveryCellIsCentred(t *testing.T) {
 
 func TestNamesRestOnTheLeftEdgeOfTheirColumn(t *testing.T) {
 	for _, kind := range kube.Kinds() {
+		if kind.Group() == kube.GroupTraffic {
+			continue
+		}
 		rows := sample(2)
 		rows[0].Name = "api"
 
@@ -2443,14 +2446,14 @@ func TestEmptyNoteSpeaksOfTheChosenKind(t *testing.T) {
 	ApplyFilter(&m)
 
 	body := strings.Join(mustDraw(t, m), "\n")
-	if !strings.Contains(body, "No statefulset matches nothing-matches.") {
+	if !strings.Contains(body, "No stateful set matches nothing-matches.") {
 		t.Errorf("the note must name the kind: %s", body)
 	}
 
 	m = model(nil)
 	m.Kind = kube.KindDaemonSet
 	m.Loaded = false
-	if body := strings.Join(mustDraw(t, m), "\n"); !strings.Contains(body, "Asking the cluster for daemonsets...") {
+	if body := strings.Join(mustDraw(t, m), "\n"); !strings.Contains(body, "Asking the cluster for daemon sets...") {
 		t.Errorf("the wait must name the kind: %s", body)
 	}
 }
@@ -2611,11 +2614,14 @@ func TestClusterKindsOfferOnlyInspect(t *testing.T) {
 	m.Expanded = "worker-01"
 
 	lines, _ := draw(t, 170, 30, m)
-	if !strings.Contains(lines[rowTop+1], "[ Inspect ]") {
-		t.Errorf("Inspect must stay: %q", lines[rowTop+1])
+	if !strings.Contains(lines[rowTop+1], "[ Copy ]") {
+		t.Errorf("Copy must come first: %q", lines[rowTop+1])
 	}
-	if strings.Contains(lines[rowTop+2], "[ Restart ]") {
-		t.Errorf("a node is not restarted from here: %q", lines[rowTop+2])
+	if !strings.Contains(lines[rowTop+2], "[ Inspect ]") {
+		t.Errorf("Inspect must stay: %q", lines[rowTop+2])
+	}
+	if strings.Contains(lines[rowTop+3], "[ Restart ]") {
+		t.Errorf("a node is not restarted from here: %q", lines[rowTop+3])
 	}
 }
 
@@ -2672,8 +2678,12 @@ func TestFocusedScopeButtonStandsOut(t *testing.T) {
 	g := geom(m, 170, 30)
 	cells, w, _ := screen.GetContents()
 
-	if _, _, attrs := cells[g.scopes[1].y*w+g.scopes[1].x].Style.Decompose(); attrs&tcell.AttrBold == 0 {
-		t.Error("the button under the arrows must be framed brightly")
+	if _, _, attrs := cells[g.scopes[1].y*w+g.scopes[1].x].Style.Decompose(); attrs&tcell.AttrReverse != 0 {
+		t.Error("walking the row must leave the frames alone")
+	}
+	label := g.scopes[1]
+	if _, _, attrs := cells[(label.y+1)*w+label.x+3].Style.Decompose(); attrs&tcell.AttrReverse == 0 {
+		t.Error("the label under the arrows must be highlighted")
 	}
 	if fg, _, _ := cells[g.scopes[0].y*w+g.scopes[0].x].Style.Decompose(); fg != tcell.ColorGreen {
 		t.Errorf("the group in use keeps its green frame, got %v", fg)
@@ -2683,5 +2693,255 @@ func TestFocusedScopeButtonStandsOut(t *testing.T) {
 	}
 	if !strings.Contains(lines[30-1], "scope") {
 		t.Errorf("the footer must explain the row: %q", lines[30-1])
+	}
+}
+
+func browsable() Model {
+	m := model([]kube.Row{
+		{Name: "api", Status: "1/2 endpoints", Severity: kube.Warn, CPUPct: -1, MemPct: -1, Worst: -1},
+		{Name: "orphan", Status: "no endpoints", Severity: kube.Bad, CPUPct: -1, MemPct: -1, Worst: -1},
+		{Name: "web", Status: "2/2 endpoints", Severity: kube.Good, CPUPct: -1, MemPct: -1, Worst: -1},
+	})
+	m.Kind = kube.KindService
+	m.Browse = Browse{
+		Name:    "api",
+		Notes:   []string{"  reachable at   10.43.0.12", "  endpoints      1/2 endpoints", "  mind that      one endpoint is not taking traffic"},
+		Default: []string{"SERVICE", "  name               api", "  type               ClusterIP"},
+		Textual: []string{"Service api is a ClusterIP in namespace production."},
+		Yaml:    []string{"apiVersion: v1", "kind: Service"},
+	}
+	return m
+}
+
+func TestTrafficSplitsNamesFromTheirConfiguration(t *testing.T) {
+	m := browsable()
+	lines, screen := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+	b := browseGeom(g, 30)
+
+	if b.list.w > g.total/3 || b.pane.w < g.total*2/3 {
+		t.Errorf("the names take a quarter and the configuration the rest: %d and %d of %d",
+			b.list.w, b.pane.w, g.total)
+	}
+	if !strings.Contains(lines[b.list.y], "services") {
+		t.Errorf("the list names the kind: %q", lines[b.list.y])
+	}
+	if !strings.Contains(lines[b.pane.y], "api") {
+		t.Errorf("the pane names the chosen one: %q", lines[b.pane.y])
+	}
+
+	for i, want := range []string{"api", "orphan", "web"} {
+		if !strings.Contains(lines[b.names.y+i], want) {
+			t.Errorf("row %d: %q, want %s", i, lines[b.names.y+i], want)
+		}
+	}
+
+	body := strings.Join(lines[b.body.y:b.body.y+6], "\n")
+	if !strings.Contains(body, "reachable at") || !strings.Contains(body, "mind that") {
+		t.Errorf("the notes come first:\n%s", body)
+	}
+	if strings.Index(body, "reachable at") > strings.Index(body, "SERVICE") {
+		t.Errorf("the notes must sit above the configuration:\n%s", body)
+	}
+
+	cells, w, _ := screen.GetContents()
+	if _, _, attrs := cells[b.names.y*w+b.names.x+1].Style.Decompose(); attrs&tcell.AttrReverse == 0 {
+		t.Error("the chosen name must be highlighted")
+	}
+	if _, _, attrs := cells[(b.names.y+1)*w+b.names.x+1].Style.Decompose(); attrs&tcell.AttrReverse != 0 {
+		t.Error("only the chosen name is highlighted")
+	}
+}
+
+func TestTrafficPaneFollowsTheFormat(t *testing.T) {
+	m := browsable()
+
+	for _, c := range []struct {
+		format Format
+		want   string
+	}{
+		{FormatDefault, "SERVICE"},
+		{FormatTextual, "Service api is a ClusterIP"},
+		{FormatYAML, "apiVersion: v1"},
+	} {
+		m.Browse.Format = c.format
+		lines, _ := draw(t, 170, 30, m)
+		if !strings.Contains(strings.Join(lines, "\n"), c.want) {
+			t.Errorf("%v must show %q", c.format, c.want)
+		}
+	}
+
+	g := geom(m, 170, 30)
+	b := browseGeom(g, 30)
+	for _, c := range []struct {
+		box    rect
+		target Target
+	}{
+		{b.dflt, HitFormatDefault},
+		{b.textual, HitFormatTextual},
+		{b.yaml, HitFormatYAML},
+	} {
+		if target, _ := Hit(m, 170, 30, c.box.x+1, c.box.y); target != c.target {
+			t.Errorf("click on a format button: %v, want %v", target, c.target)
+		}
+	}
+
+	if target, index := Hit(m, 170, 30, b.names.x+2, b.names.y+2); target != HitBrowseName || index != 2 {
+		t.Errorf("click on a name: %v %d", target, index)
+	}
+	if target, _ := Hit(m, 170, 30, b.body.x+2, b.body.y+1); target != HitBrowsePane {
+		t.Errorf("click on the configuration: %v", target)
+	}
+}
+
+func TestWideTableKeepsItsFrameWhole(t *testing.T) {
+	rows := make([]kube.Row, 0, 4)
+	for i := 0; i < 4; i++ {
+		rows = append(rows, kube.Row{
+			Name: fmt.Sprintf("shared-01-node-%d", i), Status: "Ready", Severity: kube.Good,
+			CPU: 700, CPULimit: 8000, CPUPct: 9, HasCPU: true,
+			Mem: 7000, MemLimit: 32000, MemPct: 22, HasMem: true,
+			Ready: 18, Desired: 110, Info: "v1.34.3", Worst: 22,
+		})
+	}
+
+	for _, width := range []int{120, 170, 240, 320} {
+		m := model(rows)
+		m.Kind = kube.KindNode
+		lines, _ := draw(t, width, 30, m)
+		g := geom(m, width, 30)
+
+		if sum := tableWidth(g.widths, len(g.cols)); sum != g.total {
+			t.Errorf("width %d: the columns add up to %d but the frame is %d", width, sum, g.total)
+		}
+		for _, y := range []int{tableTop, lineRule, 30 - 3} {
+			line := []rune(lines[y])
+			if len(line) < g.total {
+				t.Fatalf("width %d: line %d is short: %q", width, y, lines[y])
+			}
+			for _, x := range g.dividers() {
+				if line[x] != '┬' && line[x] != '┼' && line[x] != '┴' {
+					t.Errorf("width %d: line %d has no crossing at %d: %q", width, y, x, lines[y])
+				}
+			}
+		}
+		if g.total < width-2 {
+			t.Errorf("width %d: the table must fill the screen, got %d", width, g.total)
+		}
+		if name := g.widths[0]; name > 26 {
+			t.Errorf("width %d: the name column must not take the slack, got %d", width, name)
+		}
+	}
+}
+
+func TestTableFillsEveryTerminalItIsGiven(t *testing.T) {
+	rows := make([]kube.Row, 0, 6)
+	for i := 0; i < 6; i++ {
+		rows = append(rows, kube.Row{
+			Name: fmt.Sprintf("shared-01-node-1hm%d", i), Status: "Ready", Severity: kube.Good,
+			CPU: 700, CPULimit: 8000, CPUPct: 9, HasCPU: true,
+			Mem: 7000, MemLimit: 13000, MemPct: 54, HasMem: true,
+			Ready: 18, Desired: 110, Info: "v1.34.3", Worst: 54,
+		})
+	}
+
+	for _, kind := range kube.Kinds() {
+		if kind.Group() == kube.GroupTraffic {
+			continue
+		}
+		for width := 80; width <= 320; width += 7 {
+			m := model(rows)
+			m.Kind = kind
+			g := geom(m, width, 30)
+
+			if sum := tableWidth(g.widths, len(g.cols)); sum != g.total {
+				t.Fatalf("%v at %d: columns add up to %d, the frame is %d", kind, width, sum, g.total)
+			}
+			if g.total > width {
+				t.Fatalf("%v at %d: the table runs off the screen: %d", kind, width, g.total)
+			}
+			if g.total < width-1 {
+				t.Errorf("%v at %d: the table leaves %d columns unused", kind, width, width-g.total)
+			}
+			for i, c := range g.cols {
+				if g.widths[i] < 1 {
+					t.Fatalf("%v at %d: column %s collapsed", kind, width, c.key)
+				}
+				if c.meter != nil && g.widths[i] < meterMin && width > 120 {
+					t.Errorf("%v at %d: the %s meter is too small to read: %d", kind, width, c.key, g.widths[i])
+				}
+			}
+		}
+	}
+}
+
+func TestMetersTakeTheSlackTheNameDoesNotNeed(t *testing.T) {
+	rows := []kube.Row{{
+		Name: "worker-01", Status: "Ready", Severity: kube.Good,
+		CPU: 6200, CPULimit: 8000, CPUPct: 77, HasCPU: true,
+		Mem: 26000, MemLimit: 32000, MemPct: 81, HasMem: true,
+		Ready: 42, Desired: 110, Info: "worker v1.30.2", Worst: 81,
+	}}
+
+	narrow := model(rows)
+	narrow.Kind = kube.KindNode
+	small := geom(narrow, 150, 30)
+
+	wide := model(rows)
+	wide.Kind = kube.KindNode
+	large := geom(wide, 300, 30)
+
+	if large.widths[0] != small.widths[0] {
+		t.Errorf("the name column must not grow with the screen: %d then %d", small.widths[0], large.widths[0])
+	}
+	if need := len("worker-01") + 4; small.widths[0] < need {
+		t.Errorf("but it must hold the longest name: %d for %d", small.widths[0], need)
+	}
+
+	for _, key := range []string{"cpu_pct", "mem_pct", "pods"} {
+		before, after := widthOf(small, key), widthOf(large, key)
+		if after <= before {
+			t.Errorf("the %s meter must take the extra room: %d then %d", key, before, after)
+		}
+	}
+}
+
+func widthOf(g geometry, key string) int {
+	for i, c := range g.cols {
+		if c.key == key {
+			return g.widths[i]
+		}
+	}
+	return 0
+}
+
+func TestCopyButtonsShowATickWhileTheyRest(t *testing.T) {
+	m := inspecting()
+	m.Now = time.Now()
+	m.CopiedAt, m.CopiedWhat = m.Now.Add(-time.Second), HitCopyBody
+
+	lines, screen := draw(t, 140, 28, m)
+	g := inspectGeomFor(140, 28, 0)
+	row := lines[g.copy.y]
+	if !strings.Contains(row, "✓") || strings.Contains(row, "copy") {
+		t.Fatalf("the button must read as a tick: %q", row)
+	}
+
+	cells, w, _ := screen.GetContents()
+	fg, _, _ := cells[g.copy.y*w+g.copy.x+3].Style.Decompose()
+	if fg != tcell.ColorGreen {
+		t.Errorf("the tick must be green, got %v", fg)
+	}
+
+	m.CopiedAt = m.Now.Add(-4 * time.Second)
+	lines, _ = draw(t, 140, 28, m)
+	if !strings.Contains(lines[g.copy.y], "[ copy ]") {
+		t.Errorf("after three seconds the word comes back: %q", lines[g.copy.y])
+	}
+
+	m.CopiedAt, m.CopiedWhat = m.Now, HitCopyName
+	lines, _ = draw(t, 140, 28, m)
+	if !strings.Contains(lines[g.copy.y], "[ copy ]") {
+		t.Errorf("a tick on another button leaves this one alone: %q", lines[g.copy.y])
 	}
 }

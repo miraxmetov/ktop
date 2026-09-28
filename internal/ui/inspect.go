@@ -78,6 +78,7 @@ const (
 	defaultLabel   = "[ default ]"
 	textualLabel   = "[ textual ]"
 	yamlLabel      = "[ yaml ]"
+	copyBodyLabel  = "[ copy ]"
 	logPlaceholder = "Search log stream..."
 )
 
@@ -120,6 +121,7 @@ type inspectGeometry struct {
 	dflt     rect
 	textual  rect
 	yaml     rect
+	copy     rect
 	podPick  rect
 	podList  rect
 	room     int
@@ -155,7 +157,7 @@ func inspectGeomFor(width, height, pods int) inspectGeometry {
 		logRoom = 1
 	}
 
-	buttons := len(defaultLabel) + 2 + len(textualLabel) + 2 + len(yamlLabel)
+	buttons := len(defaultLabel) + 2 + len(textualLabel) + 2 + len(yamlLabel) + 3 + len(copyBodyLabel)
 	buttonsX := max(0, (width-buttons)/2)
 	buttonsY := height - 2
 
@@ -178,6 +180,7 @@ func inspectGeomFor(width, height, pods int) inspectGeometry {
 		dflt:     rect{x: buttonsX, y: buttonsY, w: len(defaultLabel), h: 1},
 		textual:  rect{x: buttonsX + len(defaultLabel) + 2, y: buttonsY, w: len(textualLabel), h: 1},
 		yaml:     rect{x: buttonsX + len(defaultLabel) + 2 + len(textualLabel) + 2, y: buttonsY, w: len(yamlLabel), h: 1},
+		copy:     rect{x: buttonsX + len(defaultLabel) + 2 + len(textualLabel) + 2 + len(yamlLabel) + 3, y: buttonsY, w: len(copyBodyLabel), h: 1},
 		room:     paneHeight - 2,
 		logRoom:  logRoom,
 		textArea: left.w - 4,
@@ -255,6 +258,8 @@ func drawInspect(s tcell.Screen, m Model) {
 	puts(s, g.dflt.x, g.dflt.y, 0, false, defaultLabel, pickStyle(styleChoice, m.Inspect.Format == FormatDefault))
 	puts(s, g.textual.x, g.textual.y, 0, false, textualLabel, pickStyle(styleChoice, m.Inspect.Format == FormatTextual))
 	puts(s, g.yaml.x, g.yaml.y, 0, false, yamlLabel, pickStyle(styleChoice, m.Inspect.Format == FormatYAML))
+	copyText, copyStyle := copyLabelFor(m)
+	puts(s, g.copy.x, g.copy.y, 0, false, copyText, copyStyle)
 
 	footer := "[" + arrowUp + arrowDown + "] logs   [Shift+" + arrowUp + arrowDown + "] config   " +
 		"[/] search logs   [Tab] switch format   [Esc] back to the table"
@@ -759,6 +764,8 @@ func HitInspect(m Model, width, height, x, y int) (Target, int) {
 		return HitFormatTextual, 0
 	case g.yaml.contains(x, y):
 		return HitFormatYAML, 0
+	case g.copy.contains(x, y):
+		return HitCopyBody, 0
 	case g.podPick.contains(x, y):
 		return HitLogPod, 0
 	case y >= g.search.y-1 && y <= g.search.y+1 && x >= g.right.x && x < g.right.x+g.right.w:

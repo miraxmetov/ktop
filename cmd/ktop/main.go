@@ -12,6 +12,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"github.com/miraxmetov/ktop/internal/clip"
 	"github.com/miraxmetov/ktop/internal/kube"
 	"github.com/miraxmetov/ktop/internal/paths"
 	"github.com/miraxmetov/ktop/internal/ui"
@@ -29,28 +30,40 @@ type options struct {
 }
 
 var scopes = map[string]kube.Kind{
-	"no":             kube.KindNode,
-	"node":           kube.KindNode,
-	"nodes":          kube.KindNode,
-	"ns":             kube.KindNamespace,
-	"namespaces":     kube.KindNamespace,
-	"quota":          kube.KindResourceQuota,
-	"quotas":         kube.KindResourceQuota,
-	"resourcequotas": kube.KindResourceQuota,
-	"limits":         kube.KindLimitRange,
-	"limitranges":    kube.KindLimitRange,
-	"po":             kube.KindPod,
-	"pod":            kube.KindPod,
-	"pods":           kube.KindPod,
-	"d":              kube.KindDeployment,
-	"deploy":         kube.KindDeployment,
-	"deployments":    kube.KindDeployment,
-	"rs":             kube.KindReplicaSet,
-	"replicasets":    kube.KindReplicaSet,
-	"ds":             kube.KindDaemonSet,
-	"daemonsets":     kube.KindDaemonSet,
-	"sts":            kube.KindStatefulSet,
-	"statefulsets":   kube.KindStatefulSet,
+	"no":              kube.KindNode,
+	"node":            kube.KindNode,
+	"nodes":           kube.KindNode,
+	"ns":              kube.KindNamespace,
+	"namespaces":      kube.KindNamespace,
+	"quota":           kube.KindResourceQuota,
+	"quotas":          kube.KindResourceQuota,
+	"resourcequotas":  kube.KindResourceQuota,
+	"limits":          kube.KindLimitRange,
+	"limitranges":     kube.KindLimitRange,
+	"svc":             kube.KindService,
+	"service":         kube.KindService,
+	"services":        kube.KindService,
+	"eps":             kube.KindEndpointSlice,
+	"endpointslices":  kube.KindEndpointSlice,
+	"ing":             kube.KindIngress,
+	"ingresses":       kube.KindIngress,
+	"netpol":          kube.KindNetworkPolicy,
+	"httproute":       kube.KindHTTPRoute,
+	"httproutes":      kube.KindHTTPRoute,
+	"hr":              kube.KindHTTPRoute,
+	"networkpolicies": kube.KindNetworkPolicy,
+	"po":              kube.KindPod,
+	"pod":             kube.KindPod,
+	"pods":            kube.KindPod,
+	"d":               kube.KindDeployment,
+	"deploy":          kube.KindDeployment,
+	"deployments":     kube.KindDeployment,
+	"rs":              kube.KindReplicaSet,
+	"replicasets":     kube.KindReplicaSet,
+	"ds":              kube.KindDaemonSet,
+	"daemonsets":      kube.KindDaemonSet,
+	"sts":             kube.KindStatefulSet,
+	"statefulsets":    kube.KindStatefulSet,
 }
 
 func readArgs(args []string, opts *options) {
@@ -124,6 +137,10 @@ Scopes:
                              or limit ranges
                              ktop no
 
+  svc, eps, ing, netpol, hr  traffic: services, endpoint slices, ingresses, network
+                             policies or HTTP routes
+                             ktop svc
+
   panic                      open on the deployments that are critical right now
                              ktop panic
 
@@ -191,8 +208,19 @@ type app struct {
 	pods       chan podResult
 	namespaces chan namespaceResult
 	inspected  chan inspectResult
+	browsed    chan browseResult
 	logs       chan logLine
 	stopLogs   context.CancelFunc
+	reading    bool
+}
+
+type browseResult struct {
+	name     string
+	notes    []string
+	readable []string
+	textual  []string
+	yaml     []string
+	err      error
 }
 
 type inspectResult struct {
@@ -249,6 +277,7 @@ func main() {
 		pods:       make(chan podResult, 1),
 		namespaces: make(chan namespaceResult, 1),
 		inspected:  make(chan inspectResult, 1),
+		browsed:    make(chan browseResult, 1),
 		logs:       make(chan logLine, 256),
 		model: &ui.Model{
 			Namespace:  namespace,
@@ -321,6 +350,104 @@ func (a *app) fetchPods() {
 	}()
 }
 
+func (a *app) fetchBrowse() {
+	if a.model.Kind.Group() != kube.GroupTraffic {
+		return
+	}
+
+	index := a.model.Browse.Choice
+	if index < 0 || index >= len(a.model.Rows) {
+		a.model.Browse = ui.Browse{Format: a.model.Browse.Format, Choice: a.model.Browse.Choice}
+		return
+	}
+
+	name := a.model.Rows[index].Name
+	if name != a.model.Browse.Name {
+		a.model.Browse = ui.Browse{
+			Name:    name,
+			Choice:  index,
+			Format:  a.model.Browse.Format,
+			Loading: true,
+		}
+	}
+	if a.reading {
+		return
+	}
+	a.reading = true
+
+	namespace, kind := a.namespace, a.model.Kind
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		detail, err := a.client.TrafficObject(ctx, kind, namespace, name)
+		if err != nil {
+			a.browsed <- browseResult{name: name, err: err}
+			return
+		}
+		body, err := detail.YAML()
+		if err != nil {
+			a.browsed <- browseResult{name: name, err: err}
+			return
+		}
+		now := time.Now()
+		a.browsed <- browseResult{
+			name:     name,
+			notes:    detail.Notes(),
+			readable: detail.Describe(now),
+			textual:  detail.Textual(now),
+			yaml:     body,
+		}
+	}()
+}
+
+func (a *app) chooseBrowse(index int) {
+	if len(a.model.Rows) == 0 {
+		return
+	}
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(a.model.Rows) {
+		index = len(a.model.Rows) - 1
+	}
+
+	a.model.Browse.Choice = index
+	a.model.Browse.Offset = 0
+	a.fetchBrowse()
+}
+
+func (a *app) browseFormat(step int) {
+	formats := []ui.Format{ui.FormatDefault, ui.FormatTextual, ui.FormatYAML}
+	at := 0
+	for i, format := range formats {
+		if format == a.model.Browse.Format {
+			at = i
+		}
+	}
+	a.setBrowseFormat(formats[(at+step+len(formats))%len(formats)])
+}
+
+func (a *app) setBrowseFormat(format ui.Format) {
+	if a.model.Browse.Format == format {
+		return
+	}
+	a.model.Browse.Format = format
+	a.model.Browse.Offset = 0
+}
+
+func (a *app) scrollBrowse(delta int) {
+	width, height := a.screen.Size()
+
+	a.model.Browse.Offset += delta
+	if limit := ui.MaxBrowseOffset(*a.model, width, height); a.model.Browse.Offset > limit {
+		a.model.Browse.Offset = limit
+	}
+	if a.model.Browse.Offset < 0 {
+		a.model.Browse.Offset = 0
+	}
+}
+
 func (a *app) fetchNamespaces() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -381,6 +508,23 @@ func (a *app) run() {
 				a.model.All = res.result.Rows
 			}
 			a.reselect()
+			a.draw()
+		case res := <-a.browsed:
+			a.reading = false
+			if res.name != a.model.Browse.Name {
+				continue
+			}
+			a.model.Browse.Loading = false
+			if res.err != nil {
+				a.model.Browse.Err = res.err.Error()
+			} else {
+				a.model.Browse.Err = ""
+				a.model.Browse.Notes = res.notes
+				a.model.Browse.Default = res.readable
+				a.model.Browse.Textual = res.textual
+				a.model.Browse.Yaml = res.yaml
+				a.scrollBrowse(0)
+			}
 			a.draw()
 		case res := <-a.inspected:
 			if res.name != a.model.Inspect.Pod {
@@ -452,6 +596,27 @@ func (a *app) run() {
 func (a *app) reselect() {
 	ui.ApplyFilter(a.model)
 	a.clamp()
+	a.keepChoice()
+	a.fetchBrowse()
+}
+
+func (a *app) keepChoice() {
+	if a.model.Kind.Group() != kube.GroupTraffic {
+		return
+	}
+
+	for i, row := range a.model.Rows {
+		if row.Name == a.model.Browse.Name {
+			a.model.Browse.Choice = i
+			return
+		}
+	}
+	if a.model.Browse.Choice >= len(a.model.Rows) {
+		a.model.Browse.Choice = len(a.model.Rows) - 1
+	}
+	if a.model.Browse.Choice < 0 {
+		a.model.Browse.Choice = 0
+	}
 }
 
 func (a *app) switchNamespace(name string) {
@@ -529,6 +694,67 @@ func groupIndex(group kube.Group) int {
 	return 0
 }
 
+func (a *app) handleBrowseKey(e *tcell.EventKey) (bool, bool) {
+	width, height := a.screen.Size()
+	shift := e.Modifiers()&tcell.ModShift != 0
+
+	switch e.Key() {
+	case tcell.KeyCtrlY:
+		a.copyBody()
+		return false, true
+	case tcell.KeyLeft:
+		if shift {
+			a.browseFormat(-1)
+			return false, true
+		}
+	case tcell.KeyRight:
+		if shift {
+			a.browseFormat(1)
+			return false, true
+		}
+	case tcell.KeyUp:
+		a.chooseBrowse(a.model.Browse.Choice - 1)
+		return false, true
+	case tcell.KeyDown:
+		a.chooseBrowse(a.model.Browse.Choice + 1)
+		return false, true
+	case tcell.KeyPgUp:
+		a.scrollBrowse(-ui.BrowseRoom(*a.model, width, height))
+		return false, true
+	case tcell.KeyPgDn:
+		a.scrollBrowse(ui.BrowseRoom(*a.model, width, height))
+		return false, true
+	case tcell.KeyHome:
+		a.chooseBrowse(0)
+		return false, true
+	case tcell.KeyEnd:
+		a.chooseBrowse(len(a.model.Rows) - 1)
+		return false, true
+	case tcell.KeyTab:
+		a.browseFormat(1)
+		return false, true
+	case tcell.KeyRune:
+		switch e.Rune() {
+		case 'k':
+			a.chooseBrowse(a.model.Browse.Choice - 1)
+			return false, true
+		case 'j':
+			a.chooseBrowse(a.model.Browse.Choice + 1)
+			return false, true
+		case 'y', 'Y':
+			a.setBrowseFormat(ui.FormatYAML)
+			return false, true
+		case 'd', 'D':
+			a.setBrowseFormat(ui.FormatDefault)
+			return false, true
+		case 't', 'T':
+			a.setBrowseFormat(ui.FormatTextual)
+			return false, true
+		}
+	}
+	return false, false
+}
+
 func (a *app) handleScopeKey(e *tcell.EventKey) bool {
 	switch e.Key() {
 	case tcell.KeyCtrlC:
@@ -552,6 +778,14 @@ func (a *app) handleScopeKey(e *tcell.EventKey) bool {
 		}
 	}
 	return false
+}
+
+func (a *app) toggleKind(group kube.Group) {
+	if a.model.Focus == ui.FocusKind && a.model.Group == group {
+		a.model.Focus = ui.FocusTable
+		return
+	}
+	a.focusKind(group)
 }
 
 func (a *app) focusKind(group kube.Group) {
@@ -756,6 +990,8 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 				a.model.Inspect.PodPicker = len(a.model.Inspect.LogPods) > 1 && !a.model.Inspect.PodPicker
 			case ui.HitLogPodItem:
 				a.choosePod(index)
+			case ui.HitCopyBody:
+				a.copyBody()
 			case ui.HitLogSearch:
 				a.model.Inspect.LogSearch = true
 			case ui.HitConfigPane, ui.HitLogPane:
@@ -781,7 +1017,7 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 		case ui.HitKubeconfig:
 			a.focusKubeconfig()
 		case ui.HitKindBox:
-			a.focusKind(kube.Groups()[index])
+			a.toggleKind(kube.Groups()[index])
 		case ui.HitCritical:
 			a.toggleLevel(kube.LevelCritical)
 		case ui.HitWarning:
@@ -795,6 +1031,20 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 		case ui.HitDropdown:
 			a.model.Choice = index
 			a.applyChoice()
+		case ui.HitCopyName:
+			a.copyName(index)
+		case ui.HitCopyBody:
+			a.copyBody()
+		case ui.HitBrowseName:
+			a.chooseBrowse(index)
+		case ui.HitBrowsePane:
+			a.model.Focus = ui.FocusTable
+		case ui.HitFormatDefault:
+			a.setBrowseFormat(ui.FormatDefault)
+		case ui.HitFormatTextual:
+			a.setBrowseFormat(ui.FormatTextual)
+		case ui.HitFormatYAML:
+			a.setBrowseFormat(ui.FormatYAML)
 		case ui.HitPodName:
 			a.toggleActions(index)
 		case ui.HitColumn:
@@ -815,19 +1065,29 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 			a.model.Focus = ui.FocusTable
 		}
 	case e.Buttons()&tcell.WheelUp != 0:
-		if a.model.Focus == ui.FocusTable {
-			a.scroll(-1)
-		} else {
-			a.model.Choice--
-		}
+		a.wheel(x, y, -1)
 	case e.Buttons()&tcell.WheelDown != 0:
-		if a.model.Focus == ui.FocusTable {
-			a.scroll(1)
-		} else {
-			a.model.Choice++
-		}
+		a.wheel(x, y, 1)
 	}
 	a.model.ClampChoice()
+}
+
+func (a *app) wheel(x, y, delta int) {
+	if a.model.Focus != ui.FocusTable {
+		a.model.Choice += delta
+		return
+	}
+
+	if a.model.Kind.Group() == kube.GroupTraffic {
+		width, height := a.screen.Size()
+		if target, _ := ui.Hit(*a.model, width, height, x, y); target == ui.HitBrowsePane {
+			a.scrollBrowse(delta)
+			return
+		}
+		a.chooseBrowse(a.model.Browse.Choice + delta)
+		return
+	}
+	a.scroll(delta)
 }
 
 func (a *app) handleKey(e *tcell.EventKey) bool {
@@ -841,12 +1101,20 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 		return a.handleInputKey(e)
 	}
 
+	if a.model.Kind.Group() == kube.GroupTraffic {
+		if quit, handled := a.handleBrowseKey(e); handled {
+			return quit
+		}
+	}
+
 	_, height := a.screen.Size()
 	page := ui.Fits(*a.model, height)
 
 	switch e.Key() {
 	case tcell.KeyCtrlC:
 		return true
+	case tcell.KeyCtrlY:
+		a.copyName(a.model.ExpandedIndex())
 	case tcell.KeyEscape:
 		if a.model.Confirm != ui.ActionNone {
 			a.model.Confirm = ui.ActionNone
@@ -965,6 +1233,8 @@ func (a *app) handleInspectKey(e *tcell.EventKey) bool {
 	switch e.Key() {
 	case tcell.KeyCtrlC:
 		return true
+	case tcell.KeyCtrlY:
+		a.copyBody()
 	case tcell.KeyEscape:
 		a.closeInspect()
 	case tcell.KeyUp:
@@ -1452,6 +1722,44 @@ func (a *app) fetchPod(name string) {
 			yaml:      body,
 		}
 	}()
+}
+
+func (a *app) copyName(index int) {
+	if index < 0 || index >= len(a.model.Rows) {
+		return
+	}
+	a.copy(a.model.Rows[index].Name, ui.HitCopyName)
+}
+
+func (a *app) copyBody() {
+	lines := a.copyable()
+	if len(lines) == 0 {
+		a.model.Note = "nothing to copy yet"
+		return
+	}
+	a.copy(strings.Join(lines, "\n"), ui.HitCopyBody)
+}
+
+func (a *app) copyable() []string {
+	if a.model.Screen == ui.ScreenInspect {
+		return a.model.Inspect.Lines()
+	}
+	if a.model.Kind.Group() == kube.GroupTraffic {
+		lines := append(append([]string(nil), a.model.Browse.Notes...), "")
+		return append(lines, a.model.Browse.Lines()...)
+	}
+	return nil
+}
+
+func (a *app) copy(text string, what ui.Target) {
+	if ui.Copied(*a.model, time.Now(), what) {
+		return
+	}
+	if err := clip.Copy(text); err != nil {
+		a.model.Note = "cannot copy: " + err.Error()
+		return
+	}
+	a.model.CopiedAt, a.model.CopiedWhat = time.Now(), what
 }
 
 func (a *app) runAction() {

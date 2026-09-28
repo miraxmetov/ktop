@@ -11,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	metricsv "k8s.io/metrics/pkg/client/clientset/versioned"
@@ -59,6 +60,7 @@ type Row struct {
 type Client struct {
 	pods       kubernetes.Interface
 	metrics    metricsv.Interface
+	dyn        dynamic.Interface
 	counts     *counters
 	Context    string
 	Host       string
@@ -123,9 +125,15 @@ func NewWithPath(path, contextName string) (*Client, string, error) {
 		return nil, namespace, ExplainConfig(err)
 	}
 
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, namespace, ExplainConfig(err)
+	}
+
 	client := &Client{
 		pods:       cs,
 		metrics:    ms,
+		dyn:        dyn,
 		counts:     newCounters(),
 		Host:       cfg.Host,
 		Kubeconfig: kubeconfigPath(rules),
@@ -153,6 +161,11 @@ func kubeconfigPath(rules *clientcmd.ClientConfigLoadingRules) string {
 
 func NewWithClients(pods kubernetes.Interface, metrics metricsv.Interface) *Client {
 	return &Client{pods: pods, metrics: metrics, counts: newCounters()}
+}
+
+func (c *Client) WithDynamic(dyn dynamic.Interface) *Client {
+	c.dyn = dyn
+	return c
 }
 
 type usage struct {
@@ -183,6 +196,16 @@ func (c *Client) Rows(ctx context.Context, namespace string, kind Kind) (Result,
 		return c.quotaRows(ctx, namespace)
 	case KindLimitRange:
 		return c.limitRangeRows(ctx, namespace)
+	case KindService:
+		return c.serviceRows(ctx, namespace)
+	case KindEndpointSlice:
+		return c.endpointSliceRows(ctx, namespace)
+	case KindIngress:
+		return c.ingressRows(ctx, namespace)
+	case KindNetworkPolicy:
+		return c.networkPolicyRows(ctx, namespace)
+	case KindHTTPRoute:
+		return c.httpRouteRows(ctx, namespace)
 	}
 	return c.podRows(ctx, namespace, kind)
 }

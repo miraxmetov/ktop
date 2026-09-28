@@ -64,6 +64,10 @@ const (
 	HitDimMemory
 	HitPodName
 	HitKindBox
+	HitBrowseName
+	HitBrowsePane
+	HitCopyName
+	HitCopyBody
 	HitColumn
 	HitActionInspect
 	HitActionRestart
@@ -138,7 +142,10 @@ type Model struct {
 	Screen         Screen
 	Loaded         bool
 	Inspect        Inspection
+	Browse         Browse
 	Now            time.Time
+	CopiedAt       time.Time
+	CopiedWhat     Target
 }
 
 type Screen int
@@ -168,9 +175,9 @@ func spaced(kind kube.Kind) bool {
 
 func actionLines(kind kube.Kind) int {
 	if kind.Group() == kube.GroupCluster {
-		return 1
+		return 2
 	}
-	return 3
+	return 4
 }
 
 func visibleSlots(m Model, offset, room int) []slot {
@@ -275,6 +282,7 @@ type column struct {
 	width    int
 	tinted   bool
 	sortable bool
+	grow     bool
 	value    func(kube.Row) (string, tcell.Style)
 	meter    func(kube.Row) (float64, string)
 }
@@ -356,7 +364,7 @@ var nodeColumns = []column{
 	{key: "status", title: "STATUS", width: 18, tinted: true, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		return r.Status, severityStyle(r.Severity)
 	}},
-	{key: "cpu_pct", title: "CPU", width: 22, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "cpu_pct", title: "CPU", width: 22, sortable: true, grow: true, value: func(r kube.Row) (string, tcell.Style) {
 		return pctText(r.CPUPct), pctStyle(r.CPUPct)
 	}, meter: func(r kube.Row) (float64, string) {
 		if !r.HasCPU {
@@ -364,7 +372,7 @@ var nodeColumns = []column{
 		}
 		return r.CPUPct, fmt.Sprintf("%.1f/%.0f", r.CPU/1000, r.CPULimit/1000)
 	}},
-	{key: "mem_pct", title: "MEM", width: 22, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
+	{key: "mem_pct", title: "MEM", width: 22, sortable: true, grow: true, value: func(r kube.Row) (string, tcell.Style) {
 		return pctText(r.MemPct), pctStyle(r.MemPct)
 	}, meter: func(r kube.Row) (float64, string) {
 		if !r.HasMem {
@@ -372,7 +380,7 @@ var nodeColumns = []column{
 		}
 		return r.MemPct, fmt.Sprintf("%.0f/%.0fG", r.Mem/1024, r.MemLimit/1024)
 	}},
-	{key: "pods", title: "PODS", width: 16, sortable: true, meter: func(r kube.Row) (float64, string) {
+	{key: "pods", title: "PODS", width: 16, sortable: true, grow: true, meter: func(r kube.Row) (float64, string) {
 		if r.Desired == 0 {
 			return -1, "-"
 		}
@@ -697,6 +705,43 @@ func inputWidth(text, hint string, minInner int) int {
 	return width
 }
 
+func shareSurplus(m Model, cols []column, widths []int) {
+	growing := make([]int, 0, 3)
+	for i, c := range cols {
+		if c.grow {
+			growing = append(growing, i)
+		}
+	}
+	if len(growing) == 0 {
+		return
+	}
+
+	wanted := len([]rune(cols[0].title)) + 6
+	for _, row := range m.Rows {
+		if need := len([]rune(row.Name)) + 4; need > wanted {
+			wanted = need
+		}
+	}
+	surplus := widths[0] - wanted
+	if surplus <= 0 {
+		return
+	}
+
+	for i := 0; surplus > 0; i = (i + 1) % len(growing) {
+		widths[growing[i]]++
+		widths[0]--
+		surplus--
+	}
+}
+
+func tableWidth(widths []int, columns int) int {
+	total := gap*(columns-1) + 4
+	for _, w := range widths {
+		total += w
+	}
+	return total
+}
+
 func boxWidthFor(total, share, low, high int) int {
 	width := total / share
 	if width < low {
@@ -735,8 +780,9 @@ func geom(m Model, width, height int) geometry {
 	for i := 1; i < len(cols); i++ {
 		widths[i] = cols[i].width
 	}
+	shareSurplus(m, cols, widths)
 
-	total := nameWidth + fixed
+	total := tableWidth(widths, len(cols))
 	if total > width {
 		total = width
 	}
@@ -920,6 +966,8 @@ type Rect struct {
 
 type Layout struct {
 	Kind       Rect
+	Names      Rect
+	Pane       Rect
 	Scopes     []Rect
 	Namespace  Rect
 	Search     Rect
@@ -964,9 +1012,13 @@ func Geometry(m Model, width, height int) Layout {
 		scopes = append(scopes, Rect{X: box.x, Y: box.y, W: box.w, H: box.h})
 	}
 
+	browse := browseGeom(g, height)
+
 	return Layout{
 		Columns:    columns,
 		Scopes:     scopes,
+		Names:      Rect{X: browse.names.x, Y: browse.names.y, W: browse.names.w, H: browse.names.h},
+		Pane:       Rect{X: browse.body.x, Y: browse.body.y, W: browse.body.w, H: browse.body.h},
 		Namespace:  Rect{X: g.nsBox.x, Y: g.nsBox.y, W: g.nsBox.w, H: g.nsBox.h},
 		Search:     Rect{X: g.podBox.x, Y: g.podBox.y, W: g.podBox.w, H: g.podBox.h},
 		Kubeconfig: Rect{X: g.kubeInput.x, Y: g.kubeInput.y, W: g.kubeInput.w, H: g.kubeInput.h},
@@ -1018,6 +1070,9 @@ func Hit(m Model, width, height, x, y int) (Target, int) {
 	}
 	if g.dimMemory.contains(x, y) {
 		return HitDimMemory, 0
+	}
+	if browsing(m) {
+		return hitBrowse(m, g, height, x, y)
 	}
 	if y == lineHeader && x < g.total {
 		xs := columnXs(g.widths)
@@ -1152,6 +1207,8 @@ func drawBox(s tcell.Screen, box rect, focused bool) {
 }
 
 const (
+	copyLabel       = "[ Copy ]"
+	copiedLabel     = "[   \u2713  ]"
 	inspectLabel    = "[ Inspect ]"
 	restartLabel    = "[ Restart ]"
 	terminateLabel  = "[ Terminate ]"
@@ -1173,14 +1230,21 @@ func actionLabel(m Model, line int) (string, tcell.Style) {
 			return confirmQuestion, style
 		case 1:
 			return yesLabel, style.Bold(true)
+		case 2:
+			return cancelLabel, styleDim
 		}
-		return cancelLabel, styleDim
+		return "", styleDim
 	}
 
 	switch line {
 	case 0:
-		return inspectLabel, styleChoice
+		if Copied(m, m.Now, HitCopyName) {
+			return copiedLabel, styleGood.Bold(true)
+		}
+		return copyLabel, styleAccent
 	case 1:
+		return inspectLabel, styleChoice
+	case 2:
 		return restartLabel, styleWarn
 	}
 	return terminateLabel, styleBad
@@ -1196,11 +1260,12 @@ func actionTarget(m Model, line int) Target {
 		}
 		return HitNone
 	}
-
 	switch line {
 	case 0:
-		return HitActionInspect
+		return HitCopyName
 	case 1:
+		return HitActionInspect
+	case 2:
 		return HitActionRestart
 	}
 	return HitActionTerminate
@@ -1272,11 +1337,11 @@ func drawEmptyNote(s tcell.Screen, m Model, g geometry, height int) {
 }
 
 func kindWord(kind kube.Kind) string {
-	return strings.ToLower(kind.String())
+	return kind.Spoken(2)
 }
 
 func kindNoun(kind kube.Kind) string {
-	return strings.TrimSuffix(kindWord(kind), "s")
+	return kind.Spoken(1)
 }
 
 const oops = "Oops!"
@@ -1314,10 +1379,7 @@ func drawScopes(s tcell.Screen, m Model, g geometry) {
 		holds := m.Kind.Group() == group
 
 		style := styleDim
-		switch {
-		case focused:
-			style = styleFocused
-		case holds:
+		if holds {
 			style = styleGood.Bold(true)
 		}
 		drawFramedBox(s, box, style)
@@ -1502,6 +1564,13 @@ func Draw(s tcell.Screen, m Model) {
 			fmt.Sprintf("%d/%d", len(m.Rows), len(m.All)), styleAccent)
 	}
 
+	if browsing(m) {
+		drawBrowse(s, m, g, height)
+		drawDropdown(s, g, m)
+		drawFooter(s, m, g, height, 0)
+		return
+	}
+
 	drawTableFrame(s, g, height)
 
 	xs := columnXs(g.widths)
@@ -1573,6 +1642,11 @@ func Draw(s tcell.Screen, m Model) {
 	if hidden < 0 {
 		hidden = 0
 	}
+	drawFooter(s, m, g, height, hidden)
+}
+
+func drawFooter(s tcell.Screen, m Model, g geometry, height, hidden int) {
+	total := g.total
 	items := []string{
 		"[/] search " + kindWord(m.Kind),
 		"[N] namespace",
@@ -1594,6 +1668,14 @@ func Draw(s tcell.Screen, m Model) {
 			"[Enter] apply",
 			"[Esc] close",
 			"[Shift+Tab] switch field",
+		}
+	} else if browsing(m) {
+		items = []string{
+			"[" + arrowUp + arrowDown + "] pick",
+			"[Shift+" + arrowLeft + arrowRight + "] format",
+			"[PgUp/PgDn] scroll",
+			"[/] search " + kindWord(m.Kind),
+			"[Q] quit",
 		}
 	} else if hidden > 0 {
 		items = append([]string{fmt.Sprintf("+%d more", hidden)}, items...)
@@ -1645,6 +1727,25 @@ func justify(items []string, width int) string {
 }
 
 const ()
+
+const copyHold = 3 * time.Second
+
+func Copied(m Model, now time.Time, what Target) bool {
+	if m.CopiedAt.IsZero() || m.CopiedWhat != what {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	return now.Sub(m.CopiedAt) < copyHold
+}
+
+func copyLabelFor(m Model) (string, tcell.Style) {
+	if Copied(m, m.Now, HitCopyBody) {
+		return copiedLabel, styleGood.Bold(true)
+	}
+	return copyBodyLabel, styleAccent
+}
 
 func groupIndex(group kube.Group) int {
 	for i, g := range kube.Groups() {

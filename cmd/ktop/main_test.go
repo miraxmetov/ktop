@@ -806,7 +806,7 @@ func TestDestructiveButtonsOnlyAsk(t *testing.T) {
 	a := testApp(t, "api-1", "web-1")
 	click(a, 4, rowY(a, 0))
 
-	click(a, 4, rowY(a, 2))
+	click(a, 4, rowY(a, 3))
 	if a.model.Confirm != ui.ActionRestart {
 		t.Fatalf("Restart must only ask first, got %v", a.model.Confirm)
 	}
@@ -819,7 +819,7 @@ func TestDestructiveButtonsOnlyAsk(t *testing.T) {
 		t.Fatalf("the actions stay open after cancelling, got %q", a.model.Expanded)
 	}
 
-	click(a, 4, rowY(a, 3))
+	click(a, 4, rowY(a, 4))
 	if a.model.Confirm != ui.ActionTerminate {
 		t.Fatalf("Terminate must only ask first, got %v", a.model.Confirm)
 	}
@@ -833,7 +833,7 @@ func TestInspectOpensItsOwnScreen(t *testing.T) {
 	a := testApp(t, "api-1", "web-1")
 	click(a, 4, rowY(a, 0))
 
-	click(a, 4, rowY(a, 1))
+	click(a, 4, rowY(a, 2))
 
 	if a.model.Screen != ui.ScreenInspect {
 		t.Fatalf("Inspect must switch screens, got %v", a.model.Screen)
@@ -1294,7 +1294,7 @@ func TestInspectOfAWorkloadOffersItsPods(t *testing.T) {
 		t.Fatalf("the deployment must open its actions, got %q", a.model.Expanded)
 	}
 
-	click(a, 4, rowY(a, 1))
+	click(a, 4, rowY(a, 2))
 	if a.model.Screen != ui.ScreenInspect {
 		t.Fatalf("Inspect must switch screens, got %v", a.model.Screen)
 	}
@@ -1480,13 +1480,18 @@ func TestArrowsWalkTheScopeRow(t *testing.T) {
 		t.Fatalf("the next arrow steps to the cluster: %v", a.model.Group)
 	}
 	press(a, tcell.KeyRight, 0)
+	if a.model.Group != kube.GroupTraffic {
+		t.Fatalf("the row keeps walking: %v", a.model.Group)
+	}
+	press(a, tcell.KeyRight, 0)
 	if a.model.Group != kube.GroupWorkloads {
 		t.Fatalf("the row wraps: %v", a.model.Group)
 	}
 	press(a, tcell.KeyLeft, 0)
-	if a.model.Group != kube.GroupCluster {
+	if a.model.Group != kube.GroupTraffic {
 		t.Fatalf("and walks back: %v", a.model.Group)
 	}
+	press(a, tcell.KeyLeft, 0)
 
 	press(a, tcell.KeyEnter, 0)
 	if a.model.Focus != ui.FocusKind {
@@ -1528,5 +1533,209 @@ func TestEscapeStepsBackThroughTheScopeRow(t *testing.T) {
 	press(a, tcell.KeyUp, 0)
 	if a.model.Focus != ui.FocusTable {
 		t.Fatalf("up from the row returns to the table: %v", a.model.Focus)
+	}
+}
+
+func TestTrafficScopesReachTheirKinds(t *testing.T) {
+	for arg, want := range map[string]kube.Kind{
+		"svc":    kube.KindService,
+		"eps":    kube.KindEndpointSlice,
+		"ing":    kube.KindIngress,
+		"netpol": kube.KindNetworkPolicy,
+	} {
+		var opts options
+		readArgs([]string{arg}, &opts)
+		if opts.kind != want {
+			t.Errorf("%q opened %v, want %v", arg, opts.kind, want)
+		}
+	}
+}
+
+func TestArrowsWalkTheTrafficListAndShiftSwitchesFormat(t *testing.T) {
+	a := testApp(t, "api", "orphan", "web")
+	a.model.Kind = kube.KindService
+	a.model.Browse.Name = "api"
+
+	press(a, tcell.KeyDown, 0)
+	if a.model.Browse.Choice != 1 || a.model.Offset != 0 {
+		t.Fatalf("the arrows walk the list, not the table: %d %d", a.model.Browse.Choice, a.model.Offset)
+	}
+	if a.model.Browse.Name != "orphan" || !a.model.Browse.Loading {
+		t.Fatalf("a new name must be fetched: %q %v", a.model.Browse.Name, a.model.Browse.Loading)
+	}
+
+	press(a, tcell.KeyUp, 0)
+	if a.model.Browse.Choice != 0 || a.model.Browse.Name != "api" {
+		t.Fatalf("and back: %d %q", a.model.Browse.Choice, a.model.Browse.Name)
+	}
+
+	shift(a, tcell.KeyRight)
+	if a.model.Browse.Format != ui.FormatTextual {
+		t.Fatalf("Shift+right takes the next format: %v", a.model.Browse.Format)
+	}
+	shift(a, tcell.KeyRight)
+	if a.model.Browse.Format != ui.FormatYAML {
+		t.Fatalf("and the next: %v", a.model.Browse.Format)
+	}
+	shift(a, tcell.KeyLeft)
+	if a.model.Browse.Format != ui.FormatTextual {
+		t.Fatalf("Shift+left walks back: %v", a.model.Browse.Format)
+	}
+
+	press(a, tcell.KeyRight, 0)
+	if a.model.Focus != ui.FocusScope {
+		t.Fatalf("a plain arrow still reaches the scope row: %v", a.model.Focus)
+	}
+}
+
+func TestClickPicksATrafficName(t *testing.T) {
+	a := testApp(t, "api", "orphan", "web")
+	a.model.Kind = kube.KindService
+
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.Names.X+2, g.Names.Y+2)
+	if a.model.Browse.Choice != 2 || a.model.Browse.Name != "web" {
+		t.Fatalf("a click must pick that name: %d %q", a.model.Browse.Choice, a.model.Browse.Name)
+	}
+	if a.model.Expanded != "" {
+		t.Error("traffic rows have no actions to open")
+	}
+}
+
+func TestTrafficPaneIsRefetchedOnEveryRefresh(t *testing.T) {
+	a := testApp(t, "api", "web")
+	a.model.Kind = kube.KindService
+	a.model.Browse.Name = "api"
+	a.model.Browse.Default = []string{"SERVICE"}
+	a.model.Browse.Offset = 0
+
+	a.fetchBrowse()
+	if !a.reading {
+		t.Fatal("a refresh must ask the cluster again, not keep the first answer")
+	}
+
+	a.reading = false
+	a.model.Browse.Loading = false
+	a.fetchBrowse()
+	if !a.reading {
+		t.Fatal("every tick asks again")
+	}
+	if a.model.Browse.Default == nil {
+		t.Error("the pane must keep what it shows until the new answer lands")
+	}
+}
+
+func TestCopyPutsTheNameAndTheBodyOnTheClipboard(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "copied")
+	script := "#!/bin/sh\ncat > " + out + "\n"
+	for _, name := range []string{"pbcopy", "wl-copy", "xclip", "xsel"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	a := testApp(t, "api-1", "web-1")
+	click(a, 4, rowY(a, 0))
+	click(a, 4, rowY(a, 1))
+
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(body) != "api-1" {
+		t.Errorf("the Copy button copies the name, got %q", body)
+	}
+	if a.model.Note != "" {
+		t.Errorf("no note is written for a copy that worked: %q", a.model.Note)
+	}
+	if a.model.CopiedAt.IsZero() {
+		t.Error("the button must remember when it copied")
+	}
+	if a.model.Expanded != "api-1" {
+		t.Error("the actions stay open so the tick can be seen")
+	}
+
+	a.model.Screen = ui.ScreenInspect
+	a.model.Inspect = ui.Inspection{Pod: "api-1", Default: []string{"POD", "  name    api-1"}}
+	press(a, tcell.KeyCtrlY, 0)
+
+	body, err = os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(body), "name    api-1") {
+		t.Errorf("Ctrl+Y copies the configuration, got %q", body)
+	}
+}
+
+func TestClickOnTheOpenScopeButtonClosesItsMenu(t *testing.T) {
+	a := testApp(t, "api-1")
+	g := ui.Geometry(*a.model, 170, 40)
+
+	click(a, g.Scopes[1].X+2, g.Scopes[1].Y+1)
+	if a.model.Focus != ui.FocusKind || a.model.Group != kube.GroupCluster {
+		t.Fatalf("the first click opens the menu: %v %v", a.model.Focus, a.model.Group)
+	}
+
+	click(a, g.Scopes[1].X+2, g.Scopes[1].Y+1)
+	if a.model.Focus != ui.FocusTable {
+		t.Fatalf("the second click on the same button closes it: %v", a.model.Focus)
+	}
+	if a.model.Kind != kube.KindPod {
+		t.Errorf("and changes nothing: %v", a.model.Kind)
+	}
+
+	click(a, g.Scopes[1].X+2, g.Scopes[1].Y+1)
+	click(a, g.Scopes[0].X+2, g.Scopes[0].Y+1)
+	if a.model.Focus != ui.FocusKind || a.model.Group != kube.GroupWorkloads {
+		t.Fatalf("a click on the other button moves the menu: %v %v", a.model.Focus, a.model.Group)
+	}
+}
+
+func TestTheCopyButtonAnswersWithATickAndRests(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "copied")
+	script := "#!/bin/sh\ncat >> " + out + "\n"
+	for _, name := range []string{"pbcopy", "wl-copy", "xclip", "xsel"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	a := testApp(t, "api-1", "web-1")
+	click(a, 4, rowY(a, 0))
+	click(a, 4, rowY(a, 1))
+
+	lines := frame(t, a)
+	if !strings.Contains(lines[rowY(a, 1)], "✓") || strings.Contains(lines[rowY(a, 1)], "Copy") {
+		t.Fatalf("the button must answer with a tick: %q", lines[rowY(a, 1)])
+	}
+
+	click(a, 4, rowY(a, 1))
+	click(a, 4, rowY(a, 1))
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(body) != "api-1" {
+		t.Errorf("clicks during the tick must not copy again, got %q", body)
+	}
+
+	a.model.CopiedAt = time.Now().Add(-4 * time.Second)
+	lines = frame(t, a)
+	if !strings.Contains(lines[rowY(a, 1)], "[ Copy ]") {
+		t.Fatalf("the word must come back: %q", lines[rowY(a, 1)])
+	}
+
+	click(a, 4, rowY(a, 1))
+	body, err = os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(body) != "api-1api-1" {
+		t.Errorf("and copying works again, got %q", body)
 	}
 }

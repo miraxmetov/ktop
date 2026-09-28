@@ -5,15 +5,17 @@ type Group int
 const (
 	GroupWorkloads Group = iota
 	GroupCluster
+	GroupTraffic
 )
 
 var groupNames = map[Group]string{
 	GroupWorkloads: "Workloads",
 	GroupCluster:   "Cluster",
+	GroupTraffic:   "Traffic",
 }
 
 func Groups() []Group {
-	return []Group{GroupWorkloads, GroupCluster}
+	return []Group{GroupWorkloads, GroupCluster, GroupTraffic}
 }
 
 func (g Group) String() string {
@@ -32,6 +34,11 @@ const (
 	KindNamespace
 	KindResourceQuota
 	KindLimitRange
+	KindService
+	KindEndpointSlice
+	KindIngress
+	KindNetworkPolicy
+	KindHTTPRoute
 )
 
 type kindInfo struct {
@@ -52,11 +59,17 @@ var kinds = map[Kind]kindInfo{
 	KindNamespace:     {"Namespaces", "NAMESPACE", "namespace", GroupCluster, false},
 	KindResourceQuota: {"ResourceQuotas", "RESOURCEQUOTA", "resource quota", GroupCluster, true},
 	KindLimitRange:    {"LimitRanges", "LIMITRANGE", "limit range", GroupCluster, true},
+	KindService:       {"Services", "SERVICE", "service", GroupTraffic, true},
+	KindEndpointSlice: {"EndpointSlices", "ENDPOINTSLICE", "endpoint slice", GroupTraffic, true},
+	KindIngress:       {"Ingresses", "INGRESS", "ingress", GroupTraffic, true},
+	KindNetworkPolicy: {"NetworkPolicies", "NETWORKPOLICY", "network policy", GroupTraffic, true},
+	KindHTTPRoute:     {"HTTPRoutes", "HTTPROUTE", "HTTP route", GroupTraffic, true},
 }
 
 var kindOrder = []Kind{
 	KindPod, KindDeployment, KindReplicaSet, KindDaemonSet, KindStatefulSet,
 	KindNode, KindNamespace, KindResourceQuota, KindLimitRange,
+	KindService, KindEndpointSlice, KindIngress, KindNetworkPolicy, KindHTTPRoute,
 }
 
 func Kinds() []Kind {
@@ -86,6 +99,12 @@ func (k Kind) Spoken(count int) string {
 	if count == 1 {
 		return word
 	}
+	switch k {
+	case KindIngress:
+		return "ingresses"
+	case KindNetworkPolicy:
+		return "network policies"
+	}
 	return word + "s"
 }
 
@@ -98,6 +117,9 @@ func (k Kind) Namespaced() bool {
 }
 
 func (k Kind) Measures() bool {
+	if k.Group() == GroupTraffic {
+		return false
+	}
 	switch k {
 	case KindNamespace, KindLimitRange:
 		return false

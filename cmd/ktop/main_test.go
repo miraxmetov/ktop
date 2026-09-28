@@ -364,6 +364,14 @@ func TestCtrlCQuitsFromSearch(t *testing.T) {
 	}
 }
 
+func rowY(a *app, offset int) int {
+	return ui.Geometry(*a.model, 170, 40).Rows.Y + offset
+}
+
+func searchY(a *app) int {
+	return ui.Geometry(*a.model, 170, 40).Search.Y + 1
+}
+
 func click(a *app, x, y int) {
 	a.handleMouse(tcell.NewEventMouse(x, y, tcell.Button1, tcell.ModNone))
 	a.clamp()
@@ -378,7 +386,7 @@ func TestClickFocusesSearchFields(t *testing.T) {
 	}
 
 	press(a, tcell.KeyEscape, 0)
-	click(a, 3, 9)
+	click(a, 3, searchY(a))
 	if a.model.Focus != ui.FocusPods {
 		t.Fatalf("click on the pod box: focus %v", a.model.Focus)
 	}
@@ -777,17 +785,17 @@ func TestEscapeClearsDimensionAndLevel(t *testing.T) {
 func TestClickOnTheNameOpensTheActions(t *testing.T) {
 	a := testApp(t, "api-1", "api-2", "web-1")
 
-	click(a, 4, 14)
+	click(a, 4, rowY(a, 0))
 	if a.model.Expanded != "api-1" {
 		t.Fatalf("a click on the name opens its actions, got %q", a.model.Expanded)
 	}
 
-	click(a, 4, 14)
+	click(a, 4, rowY(a, 0))
 	if a.model.Expanded != "" {
 		t.Fatalf("a second click closes them, got %q", a.model.Expanded)
 	}
 
-	click(a, 4, 14)
+	click(a, 4, rowY(a, 0))
 	press(a, tcell.KeyEscape, 0)
 	if a.model.Expanded != "" {
 		t.Fatalf("Esc closes them too, got %q", a.model.Expanded)
@@ -796,14 +804,14 @@ func TestClickOnTheNameOpensTheActions(t *testing.T) {
 
 func TestDestructiveButtonsOnlyAsk(t *testing.T) {
 	a := testApp(t, "api-1", "web-1")
-	click(a, 4, 14)
+	click(a, 4, rowY(a, 0))
 
-	click(a, 4, 16)
+	click(a, 4, rowY(a, 2))
 	if a.model.Confirm != ui.ActionRestart {
 		t.Fatalf("Restart must only ask first, got %v", a.model.Confirm)
 	}
 
-	click(a, 4, 17)
+	click(a, 4, rowY(a, 3))
 	if a.model.Confirm != ui.ActionNone {
 		t.Fatalf("Cancel must take the question back, got %v", a.model.Confirm)
 	}
@@ -811,7 +819,7 @@ func TestDestructiveButtonsOnlyAsk(t *testing.T) {
 		t.Fatalf("the actions stay open after cancelling, got %q", a.model.Expanded)
 	}
 
-	click(a, 4, 17)
+	click(a, 4, rowY(a, 3))
 	if a.model.Confirm != ui.ActionTerminate {
 		t.Fatalf("Terminate must only ask first, got %v", a.model.Confirm)
 	}
@@ -823,9 +831,9 @@ func TestDestructiveButtonsOnlyAsk(t *testing.T) {
 
 func TestInspectOpensItsOwnScreen(t *testing.T) {
 	a := testApp(t, "api-1", "web-1")
-	click(a, 4, 14)
+	click(a, 4, rowY(a, 0))
 
-	click(a, 4, 15)
+	click(a, 4, rowY(a, 1))
 
 	if a.model.Screen != ui.ScreenInspect {
 		t.Fatalf("Inspect must switch screens, got %v", a.model.Screen)
@@ -1260,8 +1268,13 @@ func TestEscapeClosesTheModeMenu(t *testing.T) {
 	}
 
 	press(a, tcell.KeyEscape, 0)
-	if a.model.Focus != ui.FocusTable || a.model.Kind != kube.KindPod {
-		t.Fatalf("Esc must close it without switching: %v %v", a.model.Focus, a.model.Kind)
+	if a.model.Focus != ui.FocusScope || a.model.Kind != kube.KindPod {
+		t.Fatalf("Esc must close it onto its button without switching: %v %v", a.model.Focus, a.model.Kind)
+	}
+
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Focus != ui.FocusTable {
+		t.Fatalf("the next Esc hands the table back: %v", a.model.Focus)
 	}
 }
 
@@ -1276,12 +1289,12 @@ func TestInspectOfAWorkloadOffersItsPods(t *testing.T) {
 	}}
 	ui.ApplyFilter(a.model)
 
-	click(a, 4, 14)
+	click(a, 4, rowY(a, 0))
 	if a.model.Expanded != "api" {
 		t.Fatalf("the deployment must open its actions, got %q", a.model.Expanded)
 	}
 
-	click(a, 4, 15)
+	click(a, 4, rowY(a, 1))
 	if a.model.Screen != ui.ScreenInspect {
 		t.Fatalf("Inspect must switch screens, got %v", a.model.Screen)
 	}
@@ -1410,5 +1423,110 @@ func TestArgumentsPickAScope(t *testing.T) {
 			t.Errorf("%v: kind %v, level %v, namespace %q, report %v",
 				c.args, opts.kind, opts.level, opts.namespace, opts.report)
 		}
+	}
+}
+
+func TestClusterScopesReachTheirKinds(t *testing.T) {
+	cases := map[string]kube.Kind{
+		"no":     kube.KindNode,
+		"nodes":  kube.KindNode,
+		"ns":     kube.KindNamespace,
+		"quota":  kube.KindResourceQuota,
+		"limits": kube.KindLimitRange,
+	}
+
+	for arg, want := range cases {
+		var opts options
+		readArgs([]string{arg}, &opts)
+		if opts.kind != want {
+			t.Errorf("%q opened %v, want %v", arg, opts.kind, want)
+		}
+		if opts.namespace != "" {
+			t.Errorf("%q must not be taken for a namespace", arg)
+		}
+	}
+}
+
+func TestMenuOpensTheGroupOfTheCurrentKind(t *testing.T) {
+	a := testApp(t, "worker-01")
+	a.model.Kind = kube.KindNode
+
+	press(a, tcell.KeyRune, 'm')
+	if a.model.Focus != ui.FocusKind || a.model.Group != kube.GroupCluster {
+		t.Fatalf("m must open the group in use: %v %v", a.model.Focus, a.model.Group)
+	}
+	if got := a.model.Options(); len(got) == 0 || got[0] != "Nodes" {
+		t.Errorf("menu: %v", got)
+	}
+
+	press(a, tcell.KeyEscape, 0)
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.Scopes[0].X+2, g.Scopes[0].Y+1)
+	if a.model.Group != kube.GroupWorkloads {
+		t.Errorf("a click on the other button opens that group: %v", a.model.Group)
+	}
+}
+
+func TestArrowsWalkTheScopeRow(t *testing.T) {
+	a := testApp(t, "api-1")
+
+	press(a, tcell.KeyRight, 0)
+	if a.model.Focus != ui.FocusScope || a.model.Group != kube.GroupWorkloads {
+		t.Fatalf("the first arrow takes the row it is on: %v %v", a.model.Focus, a.model.Group)
+	}
+
+	press(a, tcell.KeyRight, 0)
+	if a.model.Group != kube.GroupCluster {
+		t.Fatalf("the next arrow steps to the cluster: %v", a.model.Group)
+	}
+	press(a, tcell.KeyRight, 0)
+	if a.model.Group != kube.GroupWorkloads {
+		t.Fatalf("the row wraps: %v", a.model.Group)
+	}
+	press(a, tcell.KeyLeft, 0)
+	if a.model.Group != kube.GroupCluster {
+		t.Fatalf("and walks back: %v", a.model.Group)
+	}
+
+	press(a, tcell.KeyEnter, 0)
+	if a.model.Focus != ui.FocusKind {
+		t.Fatalf("Enter opens the menu of that button: %v", a.model.Focus)
+	}
+	if got := a.model.Options(); len(got) == 0 || got[0] != "Nodes" {
+		t.Fatalf("the cluster menu: %v", got)
+	}
+
+	press(a, tcell.KeyDown, 0)
+	if a.model.Choice != 1 {
+		t.Fatalf("the arrows walk the menu: %d", a.model.Choice)
+	}
+	press(a, tcell.KeyEnter, 0)
+	if a.model.Kind != kube.KindNamespace || a.model.Focus != ui.FocusTable {
+		t.Fatalf("Enter takes the kind and closes: %v %v", a.model.Kind, a.model.Focus)
+	}
+}
+
+func TestEscapeStepsBackThroughTheScopeRow(t *testing.T) {
+	a := testApp(t, "api-1")
+
+	press(a, tcell.KeyLeft, 0)
+	press(a, tcell.KeyDown, 0)
+	if a.model.Focus != ui.FocusKind {
+		t.Fatalf("down opens the menu too: %v", a.model.Focus)
+	}
+
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Focus != ui.FocusScope {
+		t.Fatalf("Esc closes the menu but keeps the button: %v", a.model.Focus)
+	}
+	press(a, tcell.KeyEscape, 0)
+	if a.model.Focus != ui.FocusTable {
+		t.Fatalf("the next Esc hands the table back: %v", a.model.Focus)
+	}
+
+	press(a, tcell.KeyRight, 0)
+	press(a, tcell.KeyUp, 0)
+	if a.model.Focus != ui.FocusTable {
+		t.Fatalf("up from the row returns to the table: %v", a.model.Focus)
 	}
 }

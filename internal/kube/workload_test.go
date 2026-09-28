@@ -184,11 +184,19 @@ func TestKindNames(t *testing.T) {
 	if kind, ok := KindByName("DaemonSets"); !ok || kind != KindDaemonSet {
 		t.Errorf("got %v %v", kind, ok)
 	}
-	if _, ok := KindByName("Nodes"); ok {
+	if _, ok := KindByName("Gadgets"); ok {
 		t.Error("unknown names must be refused")
 	}
-	if len(Kinds()) != 5 {
-		t.Errorf("five kinds, got %d", len(Kinds()))
+	if len(KindsIn(GroupWorkloads)) != 5 {
+		t.Errorf("five kinds under workloads, got %d", len(KindsIn(GroupWorkloads)))
+	}
+	if len(KindsIn(GroupCluster)) != 4 {
+		t.Errorf("four kinds under cluster, got %d", len(KindsIn(GroupCluster)))
+	}
+	for _, kind := range KindsIn(GroupCluster) {
+		if kind.Group() != GroupCluster {
+			t.Errorf("%v must belong to the cluster group", kind)
+		}
 	}
 	if strings.Join([]string{KindPod.String(), KindDeployment.String()}, " ") != "Pods Deployments" {
 		t.Error("names must read as plurals")

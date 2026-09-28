@@ -9,53 +9,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type Kind int
-
-const (
-	KindPod Kind = iota
-	KindDeployment
-	KindReplicaSet
-	KindDaemonSet
-	KindStatefulSet
-)
-
-var kindNames = map[Kind]string{
-	KindPod:         "Pods",
-	KindDeployment:  "Deployments",
-	KindReplicaSet:  "ReplicaSets",
-	KindDaemonSet:   "DaemonSets",
-	KindStatefulSet: "StatefulSets",
-}
-
-var kindColumns = map[Kind]string{
-	KindPod:         "POD",
-	KindDeployment:  "DEPLOYMENT",
-	KindReplicaSet:  "REPLICASET",
-	KindDaemonSet:   "DAEMONSET",
-	KindStatefulSet: "STATEFULSET",
-}
-
-func Kinds() []Kind {
-	return []Kind{KindPod, KindDeployment, KindReplicaSet, KindDaemonSet, KindStatefulSet}
-}
-
-func (k Kind) String() string {
-	return kindNames[k]
-}
-
-func (k Kind) Column() string {
-	return kindColumns[k]
-}
-
-func KindByName(name string) (Kind, bool) {
-	for kind, text := range kindNames {
-		if text == name {
-			return kind, true
-		}
-	}
-	return KindPod, false
-}
-
 type workload struct {
 	name     string
 	ready    int32

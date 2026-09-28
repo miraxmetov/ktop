@@ -29,18 +29,28 @@ type options struct {
 }
 
 var scopes = map[string]kube.Kind{
-	"po":           kube.KindPod,
-	"pod":          kube.KindPod,
-	"pods":         kube.KindPod,
-	"d":            kube.KindDeployment,
-	"deploy":       kube.KindDeployment,
-	"deployments":  kube.KindDeployment,
-	"rs":           kube.KindReplicaSet,
-	"replicasets":  kube.KindReplicaSet,
-	"ds":           kube.KindDaemonSet,
-	"daemonsets":   kube.KindDaemonSet,
-	"sts":          kube.KindStatefulSet,
-	"statefulsets": kube.KindStatefulSet,
+	"no":             kube.KindNode,
+	"node":           kube.KindNode,
+	"nodes":          kube.KindNode,
+	"ns":             kube.KindNamespace,
+	"namespaces":     kube.KindNamespace,
+	"quota":          kube.KindResourceQuota,
+	"quotas":         kube.KindResourceQuota,
+	"resourcequotas": kube.KindResourceQuota,
+	"limits":         kube.KindLimitRange,
+	"limitranges":    kube.KindLimitRange,
+	"po":             kube.KindPod,
+	"pod":            kube.KindPod,
+	"pods":           kube.KindPod,
+	"d":              kube.KindDeployment,
+	"deploy":         kube.KindDeployment,
+	"deployments":    kube.KindDeployment,
+	"rs":             kube.KindReplicaSet,
+	"replicasets":    kube.KindReplicaSet,
+	"ds":             kube.KindDaemonSet,
+	"daemonsets":     kube.KindDaemonSet,
+	"sts":            kube.KindStatefulSet,
+	"statefulsets":   kube.KindStatefulSet,
 }
 
 func readArgs(args []string, opts *options) {
@@ -106,14 +116,18 @@ Usage:
   ktop [namespace] [scope] [flags]
 
 Scopes:
-  po, d, rs, ds, sts         open on pods, deployments, replica sets, daemon sets or
-                             stateful sets instead of pods
+  po, d, rs, ds, sts         workloads: pods, deployments, replica sets, daemon sets or
+                             stateful sets
                              ktop d
+
+  no, ns, quota, limits      the cluster around them: nodes, namespaces, resource quotas
+                             or limit ranges
+                             ktop no
 
   panic                      open on the deployments that are critical right now
                              ktop panic
 
-  status                     print what is wrong in the namespace and exit
+  status                     print a short report on the namespace and exit
                              ktop status
 
 Flags:
@@ -262,14 +276,29 @@ func report(client *kube.Client, namespace string, kind kube.Kind) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	result, err := client.Rows(ctx, namespace, kind)
+	if kind != kube.KindPod {
+		result, err := client.Rows(ctx, namespace, kind)
+		if err != nil {
+			fail(err)
+		}
+		fmt.Println(kube.StatusText(result.Rows, kube.LevelAll, kube.DimAll, kind))
+		if result.Note != "" {
+			fmt.Println(result.Note)
+		}
+		return
+	}
+
+	summary, err := client.Summary(ctx, namespace)
 	if err != nil {
 		fail(err)
 	}
-	fmt.Println(kube.StatusText(result.Rows, kube.LevelAll, kube.DimAll))
-	if result.Note != "" {
-		fmt.Println(result.Note)
+
+	fmt.Printf("In namespace %s:\n\n", namespace)
+	for _, line := range summary.Lines() {
+		fmt.Println(line)
 	}
+	fmt.Println()
+	fmt.Println(kube.StatusText(summary.Rows, kube.LevelAll, kube.DimAll, kind))
 }
 
 func resolveNamespace(flag, fromConfig string) string {
@@ -370,7 +399,9 @@ func (a *app) run() {
 				if a.model.Inspect.LogPod == "" && len(res.pods) > 0 {
 					a.model.Inspect.LogPod = res.pods[0]
 				}
-				a.followLogs(a.model.Inspect.LogPod, res.container)
+				if a.model.Inspect.LogPod != "" {
+					a.followLogs(a.model.Inspect.LogPod, res.container)
+				}
 			}
 			a.draw()
 		case line := <-a.logs:
@@ -477,14 +508,66 @@ func (a *app) focusNamespace() {
 	a.fetchNamespaces()
 }
 
-func (a *app) focusKind() {
+func (a *app) focusScope(step int) {
+	groups := kube.Groups()
+	index := groupIndex(a.model.Group)
+
+	if a.model.Focus != ui.FocusScope {
+		index, step = groupIndex(a.model.Kind.Group()), 0
+	}
+
+	a.model.Focus = ui.FocusScope
+	a.model.Group = groups[(index+step+len(groups))%len(groups)]
+}
+
+func groupIndex(group kube.Group) int {
+	for i, g := range kube.Groups() {
+		if g == group {
+			return i
+		}
+	}
+	return 0
+}
+
+func (a *app) handleScopeKey(e *tcell.EventKey) bool {
+	switch e.Key() {
+	case tcell.KeyCtrlC:
+		return true
+	case tcell.KeyEscape:
+		a.model.Focus = ui.FocusTable
+	case tcell.KeyLeft:
+		a.focusScope(-1)
+	case tcell.KeyRight:
+		a.focusScope(1)
+	case tcell.KeyEnter, tcell.KeyDown:
+		a.focusKind(a.model.Group)
+	case tcell.KeyUp:
+		a.model.Focus = ui.FocusTable
+	case tcell.KeyRune:
+		switch e.Rune() {
+		case 'q', 'Q':
+			return true
+		case 'm', 'M':
+			a.focusKind(a.model.Group)
+		}
+	}
+	return false
+}
+
+func (a *app) focusKind(group kube.Group) {
 	a.model.Focus = ui.FocusKind
+	a.model.Group = group
 	a.model.Choice = 0
-	for i, kind := range kube.Kinds() {
+	for i, kind := range kube.KindsIn(group) {
 		if kind == a.model.Kind {
 			a.model.Choice = i
 		}
 	}
+}
+
+func (a *app) stepMenu(step int) {
+	groups := kube.Groups()
+	a.focusKind(groups[(groupIndex(a.model.Group)+step+len(groups))%len(groups)])
 }
 
 func (a *app) switchKind(name string) {
@@ -698,7 +781,7 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 		case ui.HitKubeconfig:
 			a.focusKubeconfig()
 		case ui.HitKindBox:
-			a.focusKind()
+			a.focusKind(kube.Groups()[index])
 		case ui.HitCritical:
 			a.toggleLevel(kube.LevelCritical)
 		case ui.HitWarning:
@@ -751,12 +834,15 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 	if a.model.Screen == ui.ScreenInspect {
 		return a.handleInspectKey(e)
 	}
+	if a.model.Focus == ui.FocusScope {
+		return a.handleScopeKey(e)
+	}
 	if a.model.Focus != ui.FocusTable {
 		return a.handleInputKey(e)
 	}
 
 	_, height := a.screen.Size()
-	page := ui.Visible(height)
+	page := ui.Fits(*a.model, height)
 
 	switch e.Key() {
 	case tcell.KeyCtrlC:
@@ -794,6 +880,10 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 		a.jump(0)
 	case tcell.KeyEnd:
 		a.jump(len(a.model.Rows) - 1)
+	case tcell.KeyLeft:
+		a.focusScope(-1)
+	case tcell.KeyRight:
+		a.focusScope(1)
 	case tcell.KeyTab:
 		a.focusPods()
 	case tcell.KeyBacktab:
@@ -820,7 +910,7 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 		case 'c', 'C':
 			a.focusKubeconfig()
 		case 'm', 'M':
-			a.focusKind()
+			a.focusKind(a.model.Kind.Group())
 		}
 	}
 	return false
@@ -947,13 +1037,17 @@ func (a *app) handleInputKey(e *tcell.EventKey) bool {
 		case tcell.KeyCtrlC:
 			return true
 		case tcell.KeyEscape:
-			a.model.Focus = ui.FocusTable
+			a.model.Focus = ui.FocusScope
 		case tcell.KeyEnter, tcell.KeyTab:
 			a.applyChoice()
 		case tcell.KeyUp:
 			a.model.Choice--
 		case tcell.KeyDown:
 			a.model.Choice++
+		case tcell.KeyLeft:
+			a.stepMenu(-1)
+		case tcell.KeyRight:
+			a.stepMenu(1)
 		}
 		a.model.ClampChoice()
 		return false
@@ -1179,7 +1273,13 @@ func (a *app) openInspect(index int) {
 
 	logPod := name
 	pods := []string{name}
-	if a.model.Kind != kube.KindPod {
+	logErr := ""
+
+	switch {
+	case a.model.Kind.Group() == kube.GroupCluster:
+		pods, logPod = nil, ""
+		logErr = "a " + singularOf(a.model.Kind) + " keeps no log of its own"
+	case a.model.Kind != kube.KindPod:
 		pods = append([]string(nil), a.model.Rows[index].Pods...)
 		logPod = ""
 		if len(pods) > 0 {
@@ -1191,10 +1291,15 @@ func (a *app) openInspect(index int) {
 		Pod:     name,
 		LogPod:  logPod,
 		LogPods: pods,
+		LogErr:  logErr,
 		Loading: true,
 		Format:  a.model.Inspect.Format,
 	}
 	a.fetchPod(name)
+}
+
+func singularOf(kind kube.Kind) string {
+	return strings.ToLower(strings.TrimSuffix(kind.String(), "s"))
 }
 
 func (a *app) choosePod(index int) {
@@ -1287,6 +1392,26 @@ func (a *app) fetchPod(name string) {
 
 		now := time.Now()
 
+		if kind.Group() == kube.GroupCluster {
+			detail, err := a.client.ClusterObject(ctx, kind, namespace, name)
+			if err != nil {
+				a.inspected <- inspectResult{name: name, err: err}
+				return
+			}
+			body, err := detail.YAML()
+			if err != nil {
+				a.inspected <- inspectResult{name: name, err: err}
+				return
+			}
+			a.inspected <- inspectResult{
+				name:     name,
+				readable: detail.Describe(now),
+				textual:  detail.Textual(now),
+				yaml:     body,
+			}
+			return
+		}
+
 		if kind != kube.KindPod {
 			detail, err := a.client.Workload(ctx, namespace, kind, name)
 			if err != nil {
@@ -1375,7 +1500,7 @@ func (a *app) expandedPods() []string {
 
 func (a *app) scrollTo(index int) {
 	_, height := a.screen.Size()
-	room := ui.Visible(height)
+	room := ui.Fits(*a.model, height)
 
 	if index < a.model.Offset {
 		a.model.Offset = index
@@ -1392,7 +1517,7 @@ func (a *app) clamp() {
 	}
 
 	_, height := a.screen.Size()
-	room := ui.Visible(height)
+	room := ui.Fits(*a.model, height)
 	model := a.model
 
 	if model.ExpandedIndex() < 0 {

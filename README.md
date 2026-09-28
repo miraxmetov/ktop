@@ -49,16 +49,38 @@ ktop production -i 5      # refresh every 5 seconds (default: 1)
 ktop -c staging -n web    # another kube context
 ```
 
-A word after the command opens ktop on a scope instead of pods: `po`, `d`, `rs`, `ds` and `sts`
-for pods, deployments, replica sets, daemon sets and stateful sets. `ktop panic` opens the
-deployments that are critical right now, and `ktop status` prints the status line for the
-namespace and exits, which is what a script or a prompt wants:
+A word after the command opens ktop on a scope instead of pods. Workloads: `po`, `d`, `rs`, `ds`
+and `sts` for pods, deployments, replica sets, daemon sets and stateful sets. The cluster around
+them: `no`, `ns`, `quota` and `limits` for nodes, namespaces, resource quotas and limit ranges.
+`ktop panic` opens the deployments that are critical right now, and `ktop status` prints the
+status line for the namespace and exits, which is what a script or a prompt wants:
 
 ```sh
 ktop d                    # open on deployments
 ktop ds production        # daemon sets of a namespace
+ktop no                   # nodes, with a meter per node
 ktop panic                # critical deployments, filtered on arrival
-ktop status               # Facing 2 critical issues regarding status and memory.
+ktop status               # a short report on the namespace, ending in the status line
+```
+
+`ktop status` prints what the namespace holds before it says what is wrong with it: how many pods
+and in what shape, the workloads and whether any is short of its replicas, the usage summed over
+the pods, the totals for restarts, the pod closest to its limits, and the quotas and limit ranges
+in force.
+
+```
+In namespace production:
+
+  pods                   24 (22 ready, 1 not ready, 1 in trouble)
+  workloads              6 deployments (one short of its replicas), 9 replica sets
+  usage                  1.42 cores, 6.1 GiB
+  restarts               37 in total
+  restarted most         api-worker-1, 12 times
+  closest to its limits  api-cache-0 at 96%
+  quotas                 1 resource quota, team at 94% of its tightest limit
+  limit ranges           defaults
+
+Facing 2 critical issues regarding status and memory.
 ```
 
 A namespace that happens to be named like one of those words is still reachable with `-n`.
@@ -82,6 +104,7 @@ export KUBECONFIG=~/.kube/prod.yaml
 | `Enter` | take the highlighted entry: open that pod's actions, or switch to that namespace |
 | `Esc` | step back: the open question, the open actions, the search field, the filters, then quit |
 | `Ctrl+U` | clear the current search field |
+| `←` `→` | step between the scope buttons; `Enter` or `↓` opens the menu of the one you are on |
 | `↑` `↓` / `k` `j` | pick from the open list, scroll the table, or scroll the log stream while inspecting |
 | `Shift+↑` `↓` | scroll the configuration pane while inspecting |
 | `PgUp` `PgDn` | scroll a page |
@@ -95,14 +118,30 @@ close what is open, and scroll the wheel over the table, a list or the inspect s
 
 ## What the table lists
 
-A framed box above the counters says what you are looking at, `Pods` to begin with. Click it and
-a menu offers `Deployments`, `ReplicaSets`, `DaemonSets` and `StatefulSets`. Everything else keeps
-working the same way: the same search, the same filters, the same sorting, the same actions.
+A row of two buttons above the status line says what you are looking at: `Workloads` and
+`Cluster`. Click one and its menu opens, or walk the row with `←` and `→` and open it with `Enter`
+or `↓`, then pick the kind with `↑` and `↓`. The menu carries a tick beside the kind you are on; the button that
+holds the current kind is framed in green and names it, so a glance tells you where you are.
+Everything else keeps working the same way: the same search, the same filters, the same sorting,
+the same actions.
 
-A workload row carries what its pods add up to. CPU, memory, restarts and OOM kills are summed
-over the pods it owns, `STATUS` reads as `2/3 ready`, and instead of the pod columns `EXIT` and
-`LAST RESTART` you get `CREATED`, the age of the workload itself, and `LAST POD RESTART`, the
-moment its most recently restarted pod went down.
+`Workloads` covers pods, deployments, replica sets, daemon sets and stateful sets. A workload row
+carries what its pods add up to. CPU, memory, restarts and OOM kills are summed over the pods it
+owns, `STATUS` reads as `2/3 ready`, and instead of the pod columns `EXIT` and `LAST RESTART` you
+get `CREATED`, the age of the workload itself, and `LAST POD RESTART`, the moment its most
+recently restarted pod went down.
+
+`Cluster` covers nodes, namespaces, resource quotas and limit ranges, and the same
+critical/warning machinery reads them, because each has a number with a ceiling: a node measures
+against what it can allocate, a quota against what it allows.
+
+A node row is drawn the way htop draws a gauge: CPU, memory and pods each get a meter that fills
+with the load and takes its colour from it, green below three quarters, amber from there, red
+from nine tenths, with the figures inside the bar. Inspect gives the same meters, its conditions,
+its addresses, its taints and the machine underneath. Quotas read as used against hard, per
+resource, meters included; namespaces count the pods they hold; limit ranges say what they cap and
+what a container gets when it asks for nothing. Nothing in this group is restarted or deleted from
+ktop, so these rows offer `Inspect` alone.
 
 ## The table
 
@@ -133,6 +172,9 @@ a number without meaning. Usage columns need metrics-server in the cluster; with
 When the table has nothing to show, a small framed note rests in the middle of it: `Oops!` over
 `No resources found in this namespace.`, or, while a filter or a search is on, the reason that
 nothing came through.
+
+Both search boxes, for namespaces above and for the table below, keep the same fixed width
+whatever the terminal is.
 
 The table fills whatever terminal it is given: the pod column takes the space the other columns
 leave, and the row count follows the window height. Narrow windows drop the rightmost columns

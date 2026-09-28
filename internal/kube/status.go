@@ -20,7 +20,7 @@ type StatusPart struct {
 	Dimension Dimension
 }
 
-func StatusLine(rows []Row, level Level, dimension Dimension) []StatusPart {
+func StatusLine(rows []Row, level Level, dimension Dimension, kind Kind) []StatusPart {
 	crit, warn := Count(rows, dimension)
 	dims := TroubledDimensions(rows)
 	if dimension != DimAll && !holds(dims, dimension) {
@@ -31,7 +31,7 @@ func StatusLine(rows []Row, level Level, dimension Dimension) []StatusPart {
 	showCrit := crit > 0 || level == LevelCritical
 	showWarn := warn > 0 || level == LevelWarning
 	if !showCrit && !showWarn && len(dims) == 0 {
-		return []StatusPart{{Text: "Nothing is wrong in this namespace."}}
+		return []StatusPart{{Text: "Nothing is wrong " + Where(kind) + "."}}
 	}
 
 	parts := []StatusPart{{Text: "Facing "}}
@@ -79,9 +79,16 @@ func sortDimensions(dims []Dimension) {
 	sort.Slice(dims, func(i, j int) bool { return dims[i] < dims[j] })
 }
 
-func StatusText(rows []Row, level Level, dimension Dimension) string {
+func Where(kind Kind) string {
+	if kind.Namespaced() {
+		return "in this namespace"
+	}
+	return "in this cluster"
+}
+
+func StatusText(rows []Row, level Level, dimension Dimension, kind Kind) string {
 	text := ""
-	for _, part := range StatusLine(rows, level, dimension) {
+	for _, part := range StatusLine(rows, level, dimension, kind) {
 		text += part.Text
 	}
 	return text

@@ -32,6 +32,7 @@ const (
 
 type Row struct {
 	Name        string
+	Info        string
 	Status      string
 	Severity    Severity
 	CPU         float64
@@ -173,6 +174,20 @@ func (c *Client) Namespaces(ctx context.Context) ([]string, error) {
 }
 
 func (c *Client) Rows(ctx context.Context, namespace string, kind Kind) (Result, error) {
+	switch kind {
+	case KindNode:
+		return c.nodeRows(ctx)
+	case KindNamespace:
+		return c.namespaceRows(ctx)
+	case KindResourceQuota:
+		return c.quotaRows(ctx, namespace)
+	case KindLimitRange:
+		return c.limitRangeRows(ctx, namespace)
+	}
+	return c.podRows(ctx, namespace, kind)
+}
+
+func (c *Client) podRows(ctx context.Context, namespace string, kind Kind) (Result, error) {
 	var result Result
 
 	pods, err := c.pods.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
@@ -530,6 +545,13 @@ func value(r Row, key string) float64 {
 			return -1
 		}
 		return float64(r.LastRestart.Unix())
+	case "pods":
+		return float64(r.Ready)
+	case "created":
+		if r.Created.IsZero() {
+			return -1
+		}
+		return float64(r.Created.Unix())
 	}
 	return 0
 }

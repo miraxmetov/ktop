@@ -14,6 +14,10 @@ _ktop_scopes() {
         'rs:open on replica sets'
         'ds:open on daemon sets'
         'sts:open on stateful sets'
+        'no:open on nodes'
+        'ns:open on namespaces'
+        'quota:open on resource quotas'
+        'limits:open on limit ranges'
         'panic:open on critical deployments'
         'status:print the status line and exit'
     )

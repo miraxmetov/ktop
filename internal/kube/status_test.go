@@ -23,7 +23,7 @@ func TestStatusTextNamesOnlyWhatIsWrong(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		if got := StatusText(c.rows, LevelAll, DimAll); got != c.want {
+		if got := StatusText(c.rows, LevelAll, DimAll, KindPod); got != c.want {
 			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
 		}
 	}
@@ -35,10 +35,10 @@ func TestStatusTextFollowsTheChosenDimension(t *testing.T) {
 		{Severity: Good, CPUPct: 95, MemPct: 10, Worst: 95},
 	}
 
-	if got := StatusText(rows, LevelAll, DimStatus); got != "Facing 1 critical issue regarding status and cpu." {
+	if got := StatusText(rows, LevelAll, DimStatus, KindPod); got != "Facing 1 critical issue regarding status and cpu." {
 		t.Errorf("by status: %q", got)
 	}
-	if got := StatusText(rows, LevelAll, DimMemory); got != "Facing no issues regarding status, cpu and memory." {
+	if got := StatusText(rows, LevelAll, DimMemory, KindPod); got != "Facing no issues regarding status, cpu and memory." {
 		t.Errorf("a chosen dimension stays on the line even when it is quiet: %q", got)
 	}
 }
@@ -46,7 +46,7 @@ func TestStatusTextFollowsTheChosenDimension(t *testing.T) {
 func TestStatusTextKeepsAChosenLevelVisible(t *testing.T) {
 	rows := []Row{{Severity: Good, CPUPct: 95, MemPct: 10, Worst: 95}}
 
-	if got := StatusText(rows, LevelWarning, DimAll); got != "Facing 1 critical and 0 warning issues regarding cpu." {
+	if got := StatusText(rows, LevelWarning, DimAll, KindPod); got != "Facing 1 critical and 0 warning issues regarding cpu." {
 		t.Errorf("the chosen level must stay clickable: %q", got)
 	}
 }

@@ -99,8 +99,8 @@ func TestDrawHeaderShowsNamespaceAndSearchBars(t *testing.T) {
 		}
 	}
 	g := geom(model(sample(3)), 170, 40)
-	if g.nsBox.w >= g.podBox.w {
-		t.Errorf("the namespace frame must be the narrower one: %d vs %d", g.nsBox.w, g.podBox.w)
+	if g.nsBox.w != g.podBox.w {
+		t.Errorf("both frames must be the same width: %d vs %d", g.nsBox.w, g.podBox.w)
 	}
 }
 
@@ -398,8 +398,8 @@ func TestDrawErrorAndNote(t *testing.T) {
 }
 
 func TestDrawEmptyNamespace(t *testing.T) {
-	lines, _ := draw(t, 120, 20, model(nil))
-	if !strings.Contains(strings.Join(lines, "\n"), "No resources found in this namespace.") {
+	lines, _ := draw(t, 120, 26, model(nil))
+	if !strings.Contains(strings.Join(lines, "\n"), "No pods found in this namespace.") {
 		t.Errorf("empty state: %q", strings.Join(lines[rowTop:rowTop+6], "\n"))
 	}
 	if !strings.Contains(lines[lineStatus], "Nothing is wrong in this namespace.") {
@@ -1147,15 +1147,18 @@ func TestUptimeHiddenWithoutAStart(t *testing.T) {
 	}
 }
 
-func TestPodFrameMatchesThePodColumn(t *testing.T) {
+func TestSearchFrameKeepsTheWidthOfTheNamespaceFrame(t *testing.T) {
 	for _, width := range []int{110, 160, 210, 260} {
 		m := model(sample(3))
 		lines, _ := draw(t, width, 30, m)
 		g := geom(m, width, 30)
 
 		frame := len([]rune(lines[podBoxTop]))
-		if frame != g.widths[0] {
-			t.Errorf("width %d: the frame is %d wide, the POD column is %d", width, frame, g.widths[0])
+		if frame != g.nsBox.w {
+			t.Errorf("width %d: the frame is %d wide, the namespace frame is %d", width, frame, g.nsBox.w)
+		}
+		if len([]rune(lines[nsBoxTop])) != frame {
+			t.Errorf("width %d: the two frames differ: %q", width, lines[nsBoxTop])
 		}
 	}
 }
@@ -1290,6 +1293,8 @@ func inspecting() Model {
 	m.Screen = ScreenInspect
 	m.Inspect = Inspection{
 		Pod:       "api-worker-1",
+		LogPod:    "api-worker-1",
+		LogPods:   []string{"api-worker-1"},
 		Container: "app",
 		Default:   []string{"POD", "  name               api-worker-1", "  namespace          production"},
 		Textual:   []string{"Pod api-worker-1 lives in namespace production, created 3m ago and runs on node worker-02."},
@@ -2411,7 +2416,7 @@ func TestEmptyTableHoldsANoteAboveIt(t *testing.T) {
 	if top < 0 {
 		t.Fatalf("the note must float inside the table:\n%s", strings.Join(lines[rowTop:rowTop+g.room], "\n"))
 	}
-	if !strings.Contains(lines[top+1], "No resources found in this namespace.") {
+	if !strings.Contains(lines[top+1], "No deployments found in this namespace.") {
 		t.Errorf("the second line: %q", lines[top+1])
 	}
 
@@ -2500,5 +2505,183 @@ func TestChosenFilterStaysOnTheLineAtZero(t *testing.T) {
 	g := geom(m, 170, 30)
 	if target, _ := Hit(m, 170, 30, g.warning.x+1, lineStatus); target != HitWarning {
 		t.Errorf("and clickable, to let it go: %v", target)
+	}
+}
+
+func TestScopeRowHoldsBothGroups(t *testing.T) {
+	m := model(sample(2))
+	lines, screen := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+
+	if len(g.scopes) != len(kube.Groups()) {
+		t.Fatalf("one button per group, got %d", len(g.scopes))
+	}
+	if g.scopes[0].y != scopeTop || g.scopes[0].y+g.scopes[0].h > lineStatus {
+		t.Errorf("the row must sit on its own, above the status line: %v", g.scopes[0])
+	}
+	if g.scopes[0].w != g.scopes[1].w {
+		t.Error("both buttons must be the same width")
+	}
+
+	label := lines[g.scopes[0].y+1]
+	if !strings.Contains(label, "Pods") || !strings.Contains(label, "Cluster") {
+		t.Errorf("the open group names its kind, the other names itself: %q", label)
+	}
+
+	cells, w, _ := screen.GetContents()
+	fg, _, attrs := cells[g.scopes[0].y*w+g.scopes[0].x].Style.Decompose()
+	if fg != tcell.ColorGreen || attrs&tcell.AttrBold == 0 {
+		t.Errorf("the group in use must be framed in green, got %v %v", fg, attrs)
+	}
+	if fg, _, _ := cells[g.scopes[1].y*w+g.scopes[1].x].Style.Decompose(); fg == tcell.ColorGreen {
+		t.Error("only the group in use may be green")
+	}
+
+	for i := range g.scopes {
+		target, index := Hit(m, 170, 30, g.scopes[i].x+2, g.scopes[i].y+1)
+		if target != HitKindBox || index != i {
+			t.Errorf("click on button %d: %v %d", i, target, index)
+		}
+	}
+}
+
+func TestClusterGroupOffersItsOwnKinds(t *testing.T) {
+	m := model(nil)
+	m.Kind = kube.KindNode
+	m.Focus = FocusKind
+	m.Group = kube.GroupCluster
+
+	want := []string{"Nodes", "Namespaces", "ResourceQuotas", "LimitRanges"}
+	if got := m.Options(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("menu: %v", got)
+	}
+
+	lines, _ := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+	marked := lines[g.dropdown.y+1]
+	if !strings.Contains(marked, "Nodes") || !strings.Contains(marked, chosenMark) {
+		t.Errorf("the chosen kind must carry a tick on its right: %q", marked)
+	}
+	if strings.Contains(lines[g.dropdown.y+2], chosenMark) {
+		t.Errorf("only the chosen kind is ticked: %q", lines[g.dropdown.y+2])
+	}
+}
+
+func TestNodesAreDrawnAsMeters(t *testing.T) {
+	rows := []kube.Row{{
+		Name: "worker-01", Status: "Ready", Severity: kube.Good,
+		CPU: 6200, CPULimit: 8000, CPUPct: 77.5, HasCPU: true,
+		Mem: 26000, MemLimit: 32000, MemPct: 81, HasMem: true,
+		Ready: 42, Desired: 110, Info: "worker v1.30.2", Worst: 81,
+	}}
+
+	m := model(rows)
+	m.Kind = kube.KindNode
+	lines, screen := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+	xs := columnXs(g.widths)
+
+	index := -1
+	for i, c := range g.cols {
+		if c.key == "cpu_pct" {
+			index = i
+		}
+	}
+	if index < 0 {
+		t.Fatal("the node table must carry a cpu column")
+	}
+
+	cell := string([]rune(lines[rowTop])[xs[index] : xs[index]+g.widths[index]])
+	if !strings.Contains(cell, "│") || !strings.Contains(cell, "6.2/8") {
+		t.Errorf("the load must read as a meter: %q", cell)
+	}
+
+	cells, w, _ := screen.GetContents()
+	if fg, _, _ := cells[rowTop*w+xs[index]+2].Style.Decompose(); fg != warnColor {
+		t.Errorf("a meter above three quarters must be amber, got %v", fg)
+	}
+	if !strings.Contains(lines[lineHeader], "PODS") {
+		t.Errorf("a node row counts its pods: %q", lines[lineHeader])
+	}
+}
+
+func TestClusterKindsOfferOnlyInspect(t *testing.T) {
+	m := model([]kube.Row{{Name: "worker-01", Status: "Ready", CPUPct: -1, MemPct: -1, Worst: -1}})
+	m.Kind = kube.KindNode
+	m.Expanded = "worker-01"
+
+	lines, _ := draw(t, 170, 30, m)
+	if !strings.Contains(lines[rowTop+1], "[ Inspect ]") {
+		t.Errorf("Inspect must stay: %q", lines[rowTop+1])
+	}
+	if strings.Contains(lines[rowTop+2], "[ Restart ]") {
+		t.Errorf("a node is not restarted from here: %q", lines[rowTop+2])
+	}
+}
+
+func TestNodeRowsAreSpacedApart(t *testing.T) {
+	rows := make([]kube.Row, 0, 3)
+	for i := 0; i < 3; i++ {
+		rows = append(rows, kube.Row{
+			Name: fmt.Sprintf("worker-%02d", i), Status: "Ready", Severity: kube.Good,
+			CPU: 6200, CPULimit: 8000, CPUPct: 60, HasCPU: true,
+			Mem: 16000, MemLimit: 32000, MemPct: 50, HasMem: true,
+			Ready: 20, Desired: 110, Worst: 60,
+		})
+	}
+
+	m := model(rows)
+	m.Kind = kube.KindNode
+	lines, _ := draw(t, 170, 30, m)
+
+	for i, want := range []string{"worker-00", "", "worker-01", "", "worker-02"} {
+		line := strings.TrimSpace(strings.ReplaceAll(lines[rowTop+i], "│", " "))
+		if want == "" {
+			if line != "" {
+				t.Errorf("row %d must stay empty between the meters: %q", rowTop+i, lines[rowTop+i])
+			}
+			continue
+		}
+		if !strings.Contains(line, want) {
+			t.Errorf("row %d: %q, want %s", rowTop+i, line, want)
+		}
+	}
+
+	if target, index := Hit(m, 170, 30, 4, rowTop+2); target != HitPodName || index != 1 {
+		t.Errorf("the second node sits two lines down: %v %d", target, index)
+	}
+	if target, _ := Hit(m, 170, 30, 4, rowTop+1); target != HitRow {
+		t.Errorf("the gap opens nothing: %v", target)
+	}
+	if fits, room := Fits(m, 30), Visible(30); fits > room/2+1 {
+		t.Errorf("half the lines hold a node: %d of %d", fits, room)
+	}
+
+	pods := model(rows)
+	if Fits(pods, 30) != Visible(30) {
+		t.Error("other kinds keep every line")
+	}
+}
+
+func TestFocusedScopeButtonStandsOut(t *testing.T) {
+	m := model(sample(2))
+	m.Focus = FocusScope
+	m.Group = kube.GroupCluster
+
+	lines, screen := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+	cells, w, _ := screen.GetContents()
+
+	if _, _, attrs := cells[g.scopes[1].y*w+g.scopes[1].x].Style.Decompose(); attrs&tcell.AttrBold == 0 {
+		t.Error("the button under the arrows must be framed brightly")
+	}
+	if fg, _, _ := cells[g.scopes[0].y*w+g.scopes[0].x].Style.Decompose(); fg != tcell.ColorGreen {
+		t.Errorf("the group in use keeps its green frame, got %v", fg)
+	}
+	if g.dropdown.h != 0 {
+		t.Error("walking the row must not open a menu of its own")
+	}
+	if !strings.Contains(lines[30-1], "scope") {
+		t.Errorf("the footer must explain the row: %q", lines[30-1])
 	}
 }

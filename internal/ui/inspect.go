@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
+
+	"github.com/miraxmetov/ktop/internal/kube"
 )
 
 type Format int
@@ -273,7 +275,7 @@ func drawInspect(s tcell.Screen, m Model) {
 func logTitle(m Model) string {
 	name := m.Inspect.LogPod
 	if name == "" {
-		name = m.Inspect.Pod
+		return "logs"
 	}
 	if len(m.Inspect.LogPods) > 1 {
 		return name + " " + sortBoth
@@ -435,6 +437,25 @@ func fieldSegments(line string) []segment {
 	}
 }
 
+func meterStyle(text string) tcell.Style {
+	close := strings.Index(text, "]")
+	if close < 0 {
+		return styleBase
+	}
+
+	var pct float64
+	if _, err := fmt.Sscanf(strings.TrimSpace(text[close+1:]), "%f%%", &pct); err != nil {
+		return styleBase
+	}
+	switch {
+	case pct >= kube.CritPct:
+		return styleBad
+	case pct >= kube.WarnPct:
+		return styleWarn
+	}
+	return styleGood
+}
+
 func readyStyle(text string) tcell.Style {
 	var ready, desired int
 	if _, err := fmt.Sscanf(text, "%d of %d", &ready, &desired); err != nil {
@@ -453,6 +474,10 @@ func readyStyle(text string) tcell.Style {
 
 func valueStyle(label, value string) tcell.Style {
 	trimmed := strings.TrimSpace(value)
+
+	if strings.HasPrefix(trimmed, "[") {
+		return meterStyle(trimmed)
+	}
 
 	switch label {
 	case "status", "state":

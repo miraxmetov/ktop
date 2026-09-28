@@ -6,16 +6,18 @@ const (
 	GroupWorkloads Group = iota
 	GroupCluster
 	GroupTraffic
+	GroupStorage
 )
 
 var groupNames = map[Group]string{
 	GroupWorkloads: "Workloads",
 	GroupCluster:   "Cluster",
 	GroupTraffic:   "Traffic",
+	GroupStorage:   "Storage",
 }
 
 func Groups() []Group {
-	return []Group{GroupWorkloads, GroupCluster, GroupTraffic}
+	return []Group{GroupWorkloads, GroupCluster, GroupTraffic, GroupStorage}
 }
 
 func (g Group) String() string {
@@ -39,6 +41,10 @@ const (
 	KindIngress
 	KindNetworkPolicy
 	KindHTTPRoute
+	KindGateway
+	KindVolumeClaim
+	KindVolume
+	KindStorageClass
 )
 
 type kindInfo struct {
@@ -64,12 +70,17 @@ var kinds = map[Kind]kindInfo{
 	KindIngress:       {"Ingresses", "INGRESS", "ingress", GroupTraffic, true},
 	KindNetworkPolicy: {"NetworkPolicies", "NETWORKPOLICY", "network policy", GroupTraffic, true},
 	KindHTTPRoute:     {"HTTPRoutes", "HTTPROUTE", "HTTP route", GroupTraffic, true},
+	KindGateway:       {"Gateways", "GATEWAY", "gateway", GroupTraffic, true},
+	KindVolumeClaim:   {"VolumeClaims", "VOLUMECLAIM", "volume claim", GroupStorage, true},
+	KindVolume:        {"Volumes", "VOLUME", "volume", GroupStorage, false},
+	KindStorageClass:  {"StorageClasses", "STORAGECLASS", "storage class", GroupStorage, false},
 }
 
 var kindOrder = []Kind{
 	KindPod, KindDeployment, KindReplicaSet, KindDaemonSet, KindStatefulSet,
 	KindNode, KindNamespace, KindResourceQuota, KindLimitRange,
-	KindService, KindEndpointSlice, KindIngress, KindNetworkPolicy, KindHTTPRoute,
+	KindService, KindEndpointSlice, KindIngress, KindNetworkPolicy, KindGateway, KindHTTPRoute,
+	KindVolumeClaim, KindVolume, KindStorageClass,
 }
 
 func Kinds() []Kind {
@@ -104,6 +115,8 @@ func (k Kind) Spoken(count int) string {
 		return "ingresses"
 	case KindNetworkPolicy:
 		return "network policies"
+	case KindStorageClass:
+		return "storage classes"
 	}
 	return word + "s"
 }
@@ -117,7 +130,7 @@ func (k Kind) Namespaced() bool {
 }
 
 func (k Kind) Measures() bool {
-	if k.Group() == GroupTraffic {
+	if k.Group() == GroupTraffic || k.Group() == GroupStorage {
 		return false
 	}
 	switch k {

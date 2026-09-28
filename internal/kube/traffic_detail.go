@@ -15,12 +15,19 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+type Link struct {
+	Text string
+	URL  string
+}
+
 type TrafficDetail struct {
 	Kind   Kind
 	Meta   metav1.ObjectMeta
 	object runtime.Object
 	raw    *unstructured.Unstructured
 	notes  []string
+	links  []Link
+	gauge  *Gauge
 	body   func(now time.Time) []string
 	prose  func(now time.Time) []string
 }
@@ -56,13 +63,17 @@ func (c *Client) TrafficObject(ctx context.Context, kind Kind, namespace, name s
 			return nil, fmt.Errorf("%s", ExplainWorkload(err, namespace, kind, name, c.Host))
 		}
 		endpoints := c.endpointsByService(ctx, namespace)
-		detail := &TrafficDetail{Kind: kind, Meta: item.ObjectMeta, object: item, notes: ingressNotes(item, endpoints)}
+		detail := &TrafficDetail{Kind: kind, Meta: item.ObjectMeta, object: item,
+			notes: ingressNotes(item, endpoints), links: ingressLinks(item)}
 		detail.body = func(now time.Time) []string { return describeIngress(item, endpoints, now) }
 		detail.prose = func(now time.Time) []string { return tellIngress(item, endpoints, now) }
 		return detail, nil
 
 	case KindHTTPRoute:
 		return c.httpRouteDetail(ctx, namespace, name)
+
+	case KindGateway:
+		return c.gatewayDetail(ctx, namespace, name)
 
 	case KindNetworkPolicy:
 		item, err := c.pods.NetworkingV1().NetworkPolicies(namespace).Get(ctx, name, options)
@@ -105,6 +116,14 @@ func (c *Client) podsUnder(ctx context.Context, namespace string, selector metav
 
 func (d *TrafficDetail) Notes() []string {
 	return d.notes
+}
+
+func (d *TrafficDetail) Links() []Link {
+	return d.links
+}
+
+func (d *TrafficDetail) Gauge() *Gauge {
+	return d.gauge
 }
 
 func (d *TrafficDetail) Describe(now time.Time) []string {
@@ -375,6 +394,48 @@ func ingressNotes(item *networkingv1.Ingress, endpoints map[string]endpointCount
 	}
 	if len(item.Status.LoadBalancer.Ingress) == 0 {
 		out = append(out, note("mind that", "the controller has not given it an address yet"))
+	}
+	return out
+}
+
+func ingressLinks(item *networkingv1.Ingress) []Link {
+	secured := map[string]bool{}
+	for _, tls := range item.Spec.TLS {
+		for _, host := range tls.Hosts {
+			secured[host] = true
+		}
+	}
+
+	out := make([]Link, 0, 4)
+	seen := map[string]bool{}
+
+	add := func(host, path string) {
+		if host == "" || host == "*" {
+			host = ingressAddress(item)
+		}
+		if host == "" {
+			return
+		}
+		scheme := "http"
+		if secured[host] {
+			scheme = "https"
+		}
+		url := scheme + "://" + host + or(path, "/")
+		if seen[url] {
+			return
+		}
+		seen[url] = true
+		out = append(out, Link{Text: host + or(path, "/"), URL: url})
+	}
+
+	for _, rule := range item.Spec.Rules {
+		add(rule.Host, "/")
+		if rule.HTTP == nil {
+			continue
+		}
+		for _, path := range rule.HTTP.Paths {
+			add(rule.Host, path.Path)
+		}
 	}
 	return out
 }

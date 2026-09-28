@@ -22,7 +22,11 @@ _ktop_scopes() {
         'eps:open on endpoint slices'
         'ing:open on ingresses'
         'netpol:open on network policies'
+        'gw:open on gateways'
         'hr:open on HTTP routes'
+        'pvc:open on volume claims'
+        'pv:open on volumes'
+        'sc:open on storage classes'
         'panic:open on critical deployments'
         'status:print the status line and exit'
     )

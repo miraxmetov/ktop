@@ -2120,7 +2120,7 @@ func TestEveryCellIsCentred(t *testing.T) {
 
 func TestNamesRestOnTheLeftEdgeOfTheirColumn(t *testing.T) {
 	for _, kind := range kube.Kinds() {
-		if kind.Group() == kube.GroupTraffic {
+		if browsingKind(kind) {
 			continue
 		}
 		rows := sample(2)
@@ -2846,7 +2846,7 @@ func TestTableFillsEveryTerminalItIsGiven(t *testing.T) {
 	}
 
 	for _, kind := range kube.Kinds() {
-		if kind.Group() == kube.GroupTraffic {
+		if browsingKind(kind) {
 			continue
 		}
 		for width := 80; width <= 320; width += 7 {
@@ -2944,4 +2944,182 @@ func TestCopyButtonsShowATickWhileTheyRest(t *testing.T) {
 	if !strings.Contains(lines[g.copy.y], "[ copy ]") {
 		t.Errorf("a tick on another button leaves this one alone: %q", lines[g.copy.y])
 	}
+}
+
+func TestCountersSitBesideTheStatus(t *testing.T) {
+	for _, kind := range []kube.Kind{kube.KindPod, kube.KindDeployment} {
+		m := model(sample(2))
+		m.Kind = kind
+		g := geom(m, 170, 30)
+
+		order := make([]string, 0, len(g.cols))
+		for _, c := range g.cols {
+			order = append(order, c.key)
+		}
+		got := strings.Join(order, " ")
+		if !strings.Contains(got, "status restarts ooms cpu") {
+			t.Errorf("%v: the counters belong between the status and the load: %s", kind, got)
+		}
+	}
+}
+
+func TestTrafficPaneOpensLinksAndColoursWhatMatters(t *testing.T) {
+	m := browsable()
+	m.Kind = kube.KindIngress
+	m.Browse.Notes = []string{
+		"  class          nginx",
+		"  hosts          shop.example.com",
+		"  address        none yet",
+		"  endpoints      0/2 endpoints",
+	}
+	m.Browse.Links = []Link{
+		{Text: "shop.example.com/", URL: "https://shop.example.com/"},
+		{Text: "shop.example.com/api", URL: "https://shop.example.com/api"},
+	}
+	m.Browse.Default = []string{
+		"INGRESS",
+		"  address            none yet",
+		"  endpoints          1/2 endpoints",
+		"  public Accepted    False (Refused)",
+	}
+
+	lines, screen := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+	b := browseGeom(g, 30)
+
+	row := -1
+	for i := b.body.y; i < b.body.y+b.lines; i++ {
+		if strings.Contains(lines[i], "https://shop.example.com/api") {
+			row = i
+		}
+	}
+	if row < 0 {
+		t.Fatalf("every link needs a button:\n%s", strings.Join(lines[b.body.y:b.body.y+8], "\n"))
+	}
+	if !strings.Contains(lines[row], openLabel) {
+		t.Errorf("the link must carry its button: %q", lines[row])
+	}
+
+	target, index := Hit(m, 170, 30, b.body.x+3, row)
+	if target != HitOpenLink || index != 1 {
+		t.Errorf("a click on the button opens that link: %v %d", target, index)
+	}
+	if target, _ := Hit(m, 170, 30, b.body.x+30, row); target == HitOpenLink {
+		t.Error("only the button opens it, not the whole line")
+	}
+
+	cells, w, _ := screen.GetContents()
+	styleOf := func(y int, needle string) tcell.Color {
+		at := strings.Index(lines[y], needle)
+		if at < 0 {
+			t.Fatalf("%q is not on line %d: %q", needle, y, lines[y])
+		}
+		fg, _, _ := cells[y*w+len([]rune(lines[y][:at]))].Style.Decompose()
+		return fg
+	}
+
+	for i := b.body.y; i < b.body.y+b.lines; i++ {
+		switch {
+		case strings.Contains(lines[i], "none yet") && strings.Contains(lines[i], "address"):
+			if styleOf(i, "none yet") != warnColor {
+				t.Errorf("an address that is missing must stand out: %q", lines[i])
+			}
+		case strings.Contains(lines[i], "0/2 endpoints"):
+			if styleOf(i, "0/2") != tcell.ColorRed {
+				t.Errorf("no ready endpoint is critical: %q", lines[i])
+			}
+		case strings.Contains(lines[i], "False (Refused)"):
+			if styleOf(i, "False") != tcell.ColorRed {
+				t.Errorf("a refused condition must be red: %q", lines[i])
+			}
+		case strings.Contains(lines[i], "shop.example.com") && strings.Contains(lines[i], "hosts"):
+			if styleOf(i, "shop.example.com") != tcell.ColorTeal {
+				t.Errorf("a host is worth reading: %q", lines[i])
+			}
+		}
+	}
+}
+
+func TestVolumeGaugeFillsFromTheBottom(t *testing.T) {
+	m := browsable()
+	m.Kind = kube.KindVolume
+	m.Browse.Name = "pvc-1"
+	m.Browse.Notes = []string{
+		"  state          bound to production/data-api",
+		"  size           10Gi",
+		"  filled         70%, 7.0 of 10.0 GiB (written on the node)",
+	}
+	m.Browse.Gauge = &Gauge{Percent: 70, Label: "7.0 of 10.0 GiB", Note: "written on the node"}
+
+	lines, screen := draw(t, 170, 32, m)
+	g := geom(m, 170, 32)
+	b := browseGeom(g, 32)
+
+	top := b.pane.y + 1
+	frame := []rune(lines[top])
+	x := b.pane.x + b.pane.w - gaugeWidth - 2
+	if frame[x] != '┌' {
+		t.Fatalf("the gauge must stand in the top right of the pane: %q", lines[top])
+	}
+
+	full, empty := 0, 0
+	for row := 0; row < gaugeRows; row++ {
+		cell := []rune(lines[top+1+row])[x+1]
+		switch cell {
+		case '█':
+			full++
+		case ' ':
+			empty++
+		}
+	}
+	if full != 2 || empty != 1 {
+		t.Errorf("seventy per cent must fill from the bottom up: %d full, %d empty", full, empty)
+	}
+	if !strings.Contains(lines[top+gaugeRows+2], "70%") {
+		t.Errorf("the reading belongs under it: %q", lines[top+gaugeRows+2])
+	}
+
+	cells, w, _ := screen.GetContents()
+	if fg, _, _ := cells[(top+gaugeRows)*w+x+1].Style.Decompose(); fg != tcell.ColorGreen {
+		t.Errorf("below three quarters the tank is green, got %v", fg)
+	}
+
+	m.Browse.Gauge.Percent = 95
+	_, screen = draw(t, 170, 32, m)
+	cells, w, _ = screen.GetContents()
+	if fg, _, _ := cells[(top+gaugeRows)*w+x+1].Style.Decompose(); fg != tcell.ColorRed {
+		t.Errorf("a full tank is red, got %v", fg)
+	}
+}
+
+func TestStorageReadsLikeTheOtherBrowsedScopes(t *testing.T) {
+	m := browsable()
+	m.Kind = kube.KindVolumeClaim
+	m.Browse.Notes = []string{
+		"  state          pending, nothing has been provisioned",
+		"  class          fast",
+	}
+	m.Browse.Default = []string{"VOLUMECLAIM", "  state              pending, nothing has been provisioned"}
+
+	lines, screen := draw(t, 170, 30, m)
+	g := geom(m, 170, 30)
+	b := browseGeom(g, 30)
+
+	if !strings.Contains(lines[b.list.y], "volume claims") {
+		t.Errorf("the list names the kind: %q", lines[b.list.y])
+	}
+
+	cells, w, _ := screen.GetContents()
+	for i := b.body.y; i < b.body.y+4; i++ {
+		at := strings.Index(lines[i], "pending")
+		if at < 0 {
+			continue
+		}
+		fg, _, _ := cells[i*w+len([]rune(lines[i][:at]))].Style.Decompose()
+		if fg != warnColor {
+			t.Errorf("a pending claim must stand out: %q", lines[i])
+		}
+		return
+	}
+	t.Fatal("the state is not on screen")
 }

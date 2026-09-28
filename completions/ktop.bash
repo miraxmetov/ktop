@@ -11,7 +11,7 @@ _ktop() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     opts="-h --help -V --version -i --interval -n --namespace -c --context"
-    local scopes="po d rs ds sts no ns quota limits svc eps ing netpol hr panic status"
+    local scopes="po d rs ds sts no ns quota limits svc eps ing netpol gw hr pvc pv sc panic status"
 
     case "$prev" in
         -i|--interval)

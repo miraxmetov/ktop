@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1396,32 +1399,75 @@ func TestTerminateClearsThePodsOfTheWorkload(t *testing.T) {
 
 func TestArgumentsPickAScope(t *testing.T) {
 	cases := []struct {
-		args      []string
-		kind      kube.Kind
-		level     kube.Level
-		namespace string
-		report    bool
+		args   []string
+		kind   kube.Kind
+		level  kube.Level
+		report bool
 	}{
-		{[]string{}, kube.KindPod, kube.LevelAll, "", false},
-		{[]string{"po"}, kube.KindPod, kube.LevelAll, "", false},
-		{[]string{"d"}, kube.KindDeployment, kube.LevelAll, "", false},
-		{[]string{"rs"}, kube.KindReplicaSet, kube.LevelAll, "", false},
-		{[]string{"ds"}, kube.KindDaemonSet, kube.LevelAll, "", false},
-		{[]string{"sts"}, kube.KindStatefulSet, kube.LevelAll, "", false},
-		{[]string{"panic"}, kube.KindDeployment, kube.LevelCritical, "", false},
-		{[]string{"status"}, kube.KindPod, kube.LevelAll, "", true},
-		{[]string{"production"}, kube.KindPod, kube.LevelAll, "production", false},
-		{[]string{"ds", "production"}, kube.KindDaemonSet, kube.LevelAll, "production", false},
-		{[]string{"production", "d"}, kube.KindDeployment, kube.LevelAll, "production", false},
+		{[]string{}, kube.KindPod, kube.LevelAll, false},
+		{[]string{"po"}, kube.KindPod, kube.LevelAll, false},
+		{[]string{"d"}, kube.KindDeployment, kube.LevelAll, false},
+		{[]string{"rs"}, kube.KindReplicaSet, kube.LevelAll, false},
+		{[]string{"ds"}, kube.KindDaemonSet, kube.LevelAll, false},
+		{[]string{"sts"}, kube.KindStatefulSet, kube.LevelAll, false},
+		{[]string{"panic"}, kube.KindDeployment, kube.LevelCritical, false},
+		{[]string{"status"}, kube.KindPod, kube.LevelAll, true},
+		{[]string{"status", "d"}, kube.KindDeployment, kube.LevelAll, true},
 	}
 
 	for _, c := range cases {
 		var opts options
-		readArgs(c.args, &opts)
+		if err := readArgs(c.args, &opts); err != nil {
+			t.Fatalf("%v: %v", c.args, err)
+		}
+		if opts.kind != c.kind || opts.level != c.level || opts.report != c.report {
+			t.Errorf("%v: kind %v, level %v, report %v", c.args, opts.kind, opts.level, opts.report)
+		}
+	}
+}
 
-		if opts.kind != c.kind || opts.level != c.level || opts.namespace != c.namespace || opts.report != c.report {
-			t.Errorf("%v: kind %v, level %v, namespace %q, report %v",
-				c.args, opts.kind, opts.level, opts.namespace, opts.report)
+func TestANamespaceIsNoLongerAPositionalWord(t *testing.T) {
+	var opts options
+	err := readArgs([]string{"production"}, &opts)
+	if err == nil {
+		t.Fatal("a bare word must not be taken for a namespace any more")
+	}
+	if !strings.Contains(err.Error(), "-n production") {
+		t.Errorf("and the hint must show the way: %v", err)
+	}
+}
+
+func TestMisspeltWordsAreAnswredWithTheNearestOne(t *testing.T) {
+	cases := map[string]string{
+		"deploymnets": "deployments",
+		"noed":        "node",
+		"stauts":      "status",
+		"panci":       "panic",
+	}
+
+	for typed, want := range cases {
+		var opts options
+		err := readArgs([]string{typed}, &opts)
+		if err == nil {
+			t.Fatalf("%q must be refused", typed)
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want a hint about %q", typed, err, want)
+		}
+	}
+}
+
+func TestUnknownFlagsAreAnsweredWithTheNearestOne(t *testing.T) {
+	cases := map[string]string{
+		"flag provided but not defined: -namesapce": "--namespace",
+		"flag provided but not defined: -contxt":    "--context",
+		"flag provided but not defined: -foobar":    "ktop --help",
+	}
+
+	for text, want := range cases {
+		got := flagError(errors.New(text))
+		if !strings.Contains(got.Error(), want) {
+			t.Errorf("%q: %v, want a hint about %q", text, got, want)
 		}
 	}
 }
@@ -1437,12 +1483,11 @@ func TestClusterScopesReachTheirKinds(t *testing.T) {
 
 	for arg, want := range cases {
 		var opts options
-		readArgs([]string{arg}, &opts)
+		if err := readArgs([]string{arg}, &opts); err != nil {
+			t.Fatalf("%q: %v", arg, err)
+		}
 		if opts.kind != want {
 			t.Errorf("%q opened %v, want %v", arg, opts.kind, want)
-		}
-		if opts.namespace != "" {
-			t.Errorf("%q must not be taken for a namespace", arg)
 		}
 	}
 }
@@ -1484,13 +1529,18 @@ func TestArrowsWalkTheScopeRow(t *testing.T) {
 		t.Fatalf("the row keeps walking: %v", a.model.Group)
 	}
 	press(a, tcell.KeyRight, 0)
+	if a.model.Group != kube.GroupStorage {
+		t.Fatalf("storage comes last: %v", a.model.Group)
+	}
+	press(a, tcell.KeyRight, 0)
 	if a.model.Group != kube.GroupWorkloads {
 		t.Fatalf("the row wraps: %v", a.model.Group)
 	}
 	press(a, tcell.KeyLeft, 0)
-	if a.model.Group != kube.GroupTraffic {
+	if a.model.Group != kube.GroupStorage {
 		t.Fatalf("and walks back: %v", a.model.Group)
 	}
+	press(a, tcell.KeyLeft, 0)
 	press(a, tcell.KeyLeft, 0)
 
 	press(a, tcell.KeyEnter, 0)
@@ -1542,16 +1592,20 @@ func TestTrafficScopesReachTheirKinds(t *testing.T) {
 		"eps":    kube.KindEndpointSlice,
 		"ing":    kube.KindIngress,
 		"netpol": kube.KindNetworkPolicy,
+		"gw":     kube.KindGateway,
+		"hr":     kube.KindHTTPRoute,
 	} {
 		var opts options
-		readArgs([]string{arg}, &opts)
+		if err := readArgs([]string{arg}, &opts); err != nil {
+			t.Fatalf("%q: %v", arg, err)
+		}
 		if opts.kind != want {
 			t.Errorf("%q opened %v, want %v", arg, opts.kind, want)
 		}
 	}
 }
 
-func TestArrowsWalkTheTrafficListAndShiftSwitchesFormat(t *testing.T) {
+func TestArrowsWalkTheTrafficListAndTabSwitchesFormat(t *testing.T) {
 	a := testApp(t, "api", "orphan", "web")
 	a.model.Kind = kube.KindService
 	a.model.Browse.Name = "api"
@@ -1569,17 +1623,22 @@ func TestArrowsWalkTheTrafficListAndShiftSwitchesFormat(t *testing.T) {
 		t.Fatalf("and back: %d %q", a.model.Browse.Choice, a.model.Browse.Name)
 	}
 
-	shift(a, tcell.KeyRight)
+	press(a, tcell.KeyTab, 0)
 	if a.model.Browse.Format != ui.FormatTextual {
-		t.Fatalf("Shift+right takes the next format: %v", a.model.Browse.Format)
+		t.Fatalf("Tab takes the next format, as it does in Inspect: %v", a.model.Browse.Format)
 	}
-	shift(a, tcell.KeyRight)
+	press(a, tcell.KeyTab, 0)
 	if a.model.Browse.Format != ui.FormatYAML {
 		t.Fatalf("and the next: %v", a.model.Browse.Format)
 	}
-	shift(a, tcell.KeyLeft)
+	press(a, tcell.KeyBacktab, 0)
 	if a.model.Browse.Format != ui.FormatTextual {
-		t.Fatalf("Shift+left walks back: %v", a.model.Browse.Format)
+		t.Fatalf("Shift+Tab walks back: %v", a.model.Browse.Format)
+	}
+
+	shift(a, tcell.KeyDown)
+	if a.model.Browse.Choice != 0 {
+		t.Fatalf("Shift with an arrow scrolls the pane, it does not pick: %d", a.model.Browse.Choice)
 	}
 
 	press(a, tcell.KeyRight, 0)
@@ -1737,5 +1796,141 @@ func TestTheCopyButtonAnswersWithATickAndRests(t *testing.T) {
 	}
 	if string(body) != "api-1api-1" {
 		t.Errorf("and copying works again, got %q", body)
+	}
+}
+
+func TestClickOnAnOpenButtonHandsTheLinkToTheBrowser(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "opened")
+	script := "#!/bin/sh\necho \"$1\" > " + out + "\n"
+	for _, name := range []string{"open", "xdg-open"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	a := testApp(t, "public")
+	a.model.Kind = kube.KindIngress
+	a.model.Browse = ui.Browse{
+		Name:  "public",
+		Notes: []string{"  class          nginx"},
+		Links: []ui.Link{
+			{Text: "shop.example.com/", URL: "https://shop.example.com/"},
+			{Text: "shop.example.com/api", URL: "https://shop.example.com/api"},
+		},
+		Default: []string{"INGRESS"},
+	}
+
+	g := ui.Geometry(*a.model, 170, 40)
+	click(a, g.Pane.X+3, g.Pane.Y+3)
+
+	body := ""
+	for i := 0; i < 100 && body == ""; i++ {
+		if raw, err := os.ReadFile(out); err == nil {
+			body = strings.TrimSpace(string(raw))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if body != "https://shop.example.com/api" {
+		t.Errorf("the second button opens the path, got %q", body)
+	}
+	if a.model.Note != "" {
+		t.Errorf("a link that opened writes no note: %q", a.model.Note)
+	}
+}
+
+func TestAMissingNamespaceStopsKtopBeforeItOpens(t *testing.T) {
+	client := kube.NewWithClients(k8sfake.NewSimpleClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "production"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "staging"}},
+	), metricsfake.NewSimpleClientset())
+
+	if err := checkNamespace(client, "production"); err != nil {
+		t.Fatalf("a namespace that is there must pass: %v", err)
+	}
+
+	err := checkNamespace(client, "productoin")
+	if err == nil {
+		t.Fatal("a namespace the cluster does not have must stop ktop")
+	}
+	if !strings.Contains(err.Error(), "productoin") || !strings.Contains(err.Error(), "production") {
+		t.Errorf("and name the nearest one: %v", err)
+	}
+
+	if err := checkNamespace(client, "totally-elsewhere"); err == nil {
+		t.Error("with nothing close it still refuses")
+	} else if strings.Contains(err.Error(), "did you mean") {
+		t.Errorf("but invents no suggestion: %v", err)
+	}
+}
+
+func TestFlagsAreReadOnBothSidesOfTheScope(t *testing.T) {
+	cases := [][]string{
+		{"status", "-n", "production"},
+		{"-n", "production", "status"},
+		{"-n", "production", "d", "-i", "5"},
+	}
+
+	for _, args := range cases {
+		fs := flag.NewFlagSet("ktop", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		namespace := fs.String("n", "", "")
+		fs.Float64("i", 1, "")
+
+		words := make([]string, 0, 2)
+		rest := args
+		for {
+			if err := fs.Parse(rest); err != nil {
+				t.Fatalf("%v: %v", args, err)
+			}
+			rest = fs.Args()
+			if len(rest) == 0 {
+				break
+			}
+			words = append(words, rest[0])
+			rest = rest[1:]
+		}
+
+		var opts options
+		if err := readArgs(words, &opts); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if *namespace != "production" {
+			t.Errorf("%v: the namespace is %q", args, *namespace)
+		}
+	}
+}
+
+func TestStorageScopesReachTheirKinds(t *testing.T) {
+	for arg, want := range map[string]kube.Kind{
+		"pvc": kube.KindVolumeClaim,
+		"pv":  kube.KindVolume,
+		"sc":  kube.KindStorageClass,
+	} {
+		var opts options
+		if err := readArgs([]string{arg}, &opts); err != nil {
+			t.Fatalf("%q: %v", arg, err)
+		}
+		if opts.kind != want {
+			t.Errorf("%q opened %v, want %v", arg, opts.kind, want)
+		}
+	}
+}
+
+func TestStoragePaneIsRefetchedLikeTraffic(t *testing.T) {
+	a := testApp(t, "pvc-1", "pvc-2")
+	a.model.Kind = kube.KindVolume
+	a.model.Browse.Name = "pvc-1"
+
+	a.fetchBrowse()
+	if !a.reading {
+		t.Fatal("a storage pane must be asked for again on every refresh")
+	}
+
+	a.reading = false
+	press(a, tcell.KeyDown, 0)
+	if a.model.Browse.Choice != 1 || a.model.Browse.Name != "pvc-2" {
+		t.Fatalf("the arrows walk the list: %d %q", a.model.Browse.Choice, a.model.Browse.Name)
 	}
 }

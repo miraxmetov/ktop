@@ -6,12 +6,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
 
+	"github.com/miraxmetov/ktop/internal/browser"
 	"github.com/miraxmetov/ktop/internal/clip"
 	"github.com/miraxmetov/ktop/internal/kube"
 	"github.com/miraxmetov/ktop/internal/paths"
@@ -40,6 +43,15 @@ var scopes = map[string]kube.Kind{
 	"resourcequotas":  kube.KindResourceQuota,
 	"limits":          kube.KindLimitRange,
 	"limitranges":     kube.KindLimitRange,
+	"pvc":             kube.KindVolumeClaim,
+	"volumeclaims":    kube.KindVolumeClaim,
+	"pv":              kube.KindVolume,
+	"volumes":         kube.KindVolume,
+	"sc":              kube.KindStorageClass,
+	"storageclasses":  kube.KindStorageClass,
+	"gw":              kube.KindGateway,
+	"gateway":         kube.KindGateway,
+	"gateways":        kube.KindGateway,
 	"svc":             kube.KindService,
 	"service":         kube.KindService,
 	"services":        kube.KindService,
@@ -66,7 +78,7 @@ var scopes = map[string]kube.Kind{
 	"statefulsets":    kube.KindStatefulSet,
 }
 
-func readArgs(args []string, opts *options) {
+func readArgs(args []string, opts *options) error {
 	for _, arg := range args {
 		switch {
 		case arg == "status":
@@ -74,13 +86,73 @@ func readArgs(args []string, opts *options) {
 		case arg == "panic":
 			opts.kind, opts.level = kube.KindDeployment, kube.LevelCritical
 		default:
-			if kind, ok := scopes[arg]; ok {
-				opts.kind = kind
-				continue
+			kind, ok := scopes[arg]
+			if !ok {
+				return unknownWord(arg)
 			}
-			opts.namespace = arg
+			opts.kind = kind
 		}
 	}
+	return nil
+}
+
+func unknownWord(word string) error {
+	options := append(scopeWords(), "panic", "status")
+	if near := closest(word, options); near != "" {
+		return fmt.Errorf("%q is not a scope; did you mean %q?", word, near)
+	}
+	return fmt.Errorf("%q is not a scope; a namespace goes after -n, as in ktop -n %s", word, word)
+}
+
+func scopeWords() []string {
+	out := make([]string, 0, len(scopes))
+	for word := range scopes {
+		out = append(out, word)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func closest(word string, options []string) string {
+	limit := len(word)/3 + 1
+	best, distance, gap := "", limit+1, 0
+
+	for _, option := range options {
+		d := editDistance(word, option)
+		if d > limit {
+			continue
+		}
+		spread := len(option) - len(word)
+		if spread < 0 {
+			spread = -spread
+		}
+		if d < distance || (d == distance && spread < gap) {
+			best, distance, gap = option, d, spread
+		}
+	}
+	return best
+}
+
+func editDistance(a, b string) int {
+	first, second := []rune(a), []rune(b)
+	previous := make([]int, len(second)+1)
+	current := make([]int, len(second)+1)
+
+	for j := range previous {
+		previous[j] = j
+	}
+	for i := 1; i <= len(first); i++ {
+		current[0] = i
+		for j := 1; j <= len(second); j++ {
+			cost := 1
+			if first[i-1] == second[j-1] {
+				cost = 0
+			}
+			current[j] = min(min(current[j-1]+1, previous[j]+1), previous[j-1]+cost)
+		}
+		copy(previous, current)
+	}
+	return previous[len(second)]
 }
 
 func parseFlags() (options, error) {
@@ -101,12 +173,26 @@ func parseFlags() (options, error) {
 	fs.Float64Var(&intervalArg, "interval", 1, "refresh interval in seconds")
 	fs.BoolVar(&showVersion, "V", false, "print version and exit")
 	fs.BoolVar(&showVersion, "version", false, "print version and exit")
-	fs.Usage = func() { fmt.Fprint(fs.Output(), usage) }
-	if err := fs.Parse(os.Args[1:]); err != nil {
-		if err == flag.ErrHelp {
-			os.Exit(0)
+	fs.Usage = func() {}
+	fs.SetOutput(io.Discard)
+
+	words := make([]string, 0, 2)
+	rest := os.Args[1:]
+
+	for {
+		if err := fs.Parse(rest); err != nil {
+			if err == flag.ErrHelp {
+				fmt.Print(usage)
+				os.Exit(0)
+			}
+			return opts, flagError(err)
 		}
-		return opts, err
+		rest = fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		words = append(words, rest[0])
+		rest = rest[1:]
 	}
 	if showVersion {
 		fmt.Println("ktop " + version)
@@ -117,16 +203,39 @@ func parseFlags() (options, error) {
 	}
 
 	opts.namespace = nsFlag
-	readArgs(fs.Args(), &opts)
+	if err := readArgs(words, &opts); err != nil {
+		return opts, err
+	}
 	opts.context = ctxFlag
 	opts.interval = time.Duration(intervalArg * float64(time.Second))
 	return opts, nil
 }
 
-const usage = `ktop - live pod resource usage as a percentage of limits
+func flagError(err error) error {
+	const prefix = "flag provided but not defined: -"
+	text := err.Error()
+	if !strings.HasPrefix(text, prefix) {
+		return err
+	}
+
+	word := strings.TrimPrefix(text, prefix)
+	if near := closest(word, []string{"n", "namespace", "c", "context", "i", "interval", "help", "version"}); near != "" {
+		dash := "-"
+		if len(near) > 1 {
+			dash = "--"
+		}
+		return fmt.Errorf("unknown flag -%s; did you mean %s%s?", word, dash, near)
+	}
+	if near := closest(word, append(scopeWords(), "panic", "status")); near != "" {
+		return fmt.Errorf("unknown flag -%s; did you mean the scope %s, without the dash?", word, near)
+	}
+	return fmt.Errorf("unknown flag -%s; run ktop --help to see what there is", word)
+}
+
+const usage = `ktop - a live terminal window into a Kubernetes cluster
 
 Usage:
-  ktop [namespace] [scope] [flags]
+  ktop [scope] [flags]
 
 Scopes:
   po, d, rs, ds, sts         workloads: pods, deployments, replica sets, daemon sets or
@@ -137,9 +246,12 @@ Scopes:
                              or limit ranges
                              ktop no
 
-  svc, eps, ing, netpol, hr  traffic: services, endpoint slices, ingresses, network
-                             policies or HTTP routes
+  svc, eps, ing, netpol,     traffic: services, endpoint slices, ingresses, network
+  gw, hr                     policies, gateways or HTTP routes
                              ktop svc
+
+  pvc, pv, sc                storage: volume claims, volumes or storage classes
+                             ktop pv
 
   panic                      open on the deployments that are critical right now
                              ktop panic
@@ -166,13 +278,14 @@ Flags:
 
 The cluster comes from $KUBECONFIG, or ~/.kube/config; press c inside ktop to switch it.
 
-A namespace named like a scope is reached with -n, as in ktop -n status.
+A namespace is named with -n; a word on its own is read as a scope. ktop refuses to start on a
+namespace the cluster does not have, and suggests the nearest word it knows when one is misspelt.
 
 Examples:
   ktop                       watch the namespace of the current context
-  ktop production            watch a namespace by name
-  ktop production -i 5       the same, refreshed every five seconds
-  ktop ds production         watch the daemon sets of that namespace
+  ktop -n production         watch a namespace by name
+  ktop -n production -i 5    the same, refreshed every five seconds
+  ktop ds -n production      watch the daemon sets of that namespace
   ktop status -n production  print its status line and exit
   KUBECONFIG=~/.kube/prod.yaml ktop
 `
@@ -217,6 +330,8 @@ type app struct {
 type browseResult struct {
 	name     string
 	notes    []string
+	links    []ui.Link
+	gauge    *ui.Gauge
 	readable []string
 	textual  []string
 	yaml     []string
@@ -251,6 +366,12 @@ func main() {
 		fail(err)
 	}
 	namespace := resolveNamespace(opts.namespace, defaultNamespace)
+	if opts.namespace != "" {
+		if err := checkNamespace(client, namespace); err != nil {
+			fmt.Fprintln(os.Stderr, "ktop: "+err.Error())
+			os.Exit(1)
+		}
+	}
 
 	if opts.report {
 		report(client, namespace, opts.kind)
@@ -330,6 +451,26 @@ func report(client *kube.Client, namespace string, kind kube.Kind) {
 	fmt.Println(kube.StatusText(summary.Rows, kube.LevelAll, kube.DimAll, kind))
 }
 
+func checkNamespace(client *kube.Client, name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	names, err := client.Namespaces(ctx)
+	if err != nil {
+		return nil
+	}
+	for _, known := range names {
+		if known == name {
+			return nil
+		}
+	}
+
+	if near := closest(name, names); near != "" {
+		return fmt.Errorf("this cluster has no namespace %q; did you mean %q?", name, near)
+	}
+	return fmt.Errorf("this cluster has no namespace %q", name)
+}
+
 func resolveNamespace(flag, fromConfig string) string {
 	for _, candidate := range []string{flag, fromConfig} {
 		if candidate != "" {
@@ -351,7 +492,7 @@ func (a *app) fetchPods() {
 }
 
 func (a *app) fetchBrowse() {
-	if a.model.Kind.Group() != kube.GroupTraffic {
+	if !browsingKind(a.model.Kind) {
 		return
 	}
 
@@ -380,7 +521,7 @@ func (a *app) fetchBrowse() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		detail, err := a.client.TrafficObject(ctx, kind, namespace, name)
+		detail, err := a.client.BrowseObject(ctx, kind, namespace, name)
 		if err != nil {
 			a.browsed <- browseResult{name: name, err: err}
 			return
@@ -391,14 +532,34 @@ func (a *app) fetchBrowse() {
 			return
 		}
 		now := time.Now()
+		links := make([]ui.Link, 0, len(detail.Links()))
+		for _, link := range detail.Links() {
+			links = append(links, ui.Link{Text: link.Text, URL: link.URL})
+		}
+
+		var gauge *ui.Gauge
+		if read := detail.Gauge(); read != nil {
+			gauge = &ui.Gauge{Percent: read.Percent(), Label: read.Label, Note: read.Note}
+		}
+
 		a.browsed <- browseResult{
 			name:     name,
 			notes:    detail.Notes(),
+			links:    links,
+			gauge:    gauge,
 			readable: detail.Describe(now),
 			textual:  detail.Textual(now),
 			yaml:     body,
 		}
 	}()
+}
+
+func browsingKind(kind kube.Kind) bool {
+	switch kind.Group() {
+	case kube.GroupTraffic, kube.GroupStorage:
+		return true
+	}
+	return false
 }
 
 func (a *app) chooseBrowse(index int) {
@@ -520,6 +681,8 @@ func (a *app) run() {
 			} else {
 				a.model.Browse.Err = ""
 				a.model.Browse.Notes = res.notes
+				a.model.Browse.Links = res.links
+				a.model.Browse.Gauge = res.gauge
 				a.model.Browse.Default = res.readable
 				a.model.Browse.Textual = res.textual
 				a.model.Browse.Yaml = res.yaml
@@ -601,7 +764,7 @@ func (a *app) reselect() {
 }
 
 func (a *app) keepChoice() {
-	if a.model.Kind.Group() != kube.GroupTraffic {
+	if !browsingKind(a.model.Kind) {
 		return
 	}
 
@@ -702,20 +865,24 @@ func (a *app) handleBrowseKey(e *tcell.EventKey) (bool, bool) {
 	case tcell.KeyCtrlY:
 		a.copyBody()
 		return false, true
-	case tcell.KeyLeft:
-		if shift {
-			a.browseFormat(-1)
-			return false, true
-		}
-	case tcell.KeyRight:
-		if shift {
-			a.browseFormat(1)
-			return false, true
-		}
+	case tcell.KeyTab:
+		a.browseFormat(1)
+		return false, true
+	case tcell.KeyBacktab:
+		a.browseFormat(-1)
+		return false, true
 	case tcell.KeyUp:
+		if shift {
+			a.scrollBrowse(-1)
+			return false, true
+		}
 		a.chooseBrowse(a.model.Browse.Choice - 1)
 		return false, true
 	case tcell.KeyDown:
+		if shift {
+			a.scrollBrowse(1)
+			return false, true
+		}
 		a.chooseBrowse(a.model.Browse.Choice + 1)
 		return false, true
 	case tcell.KeyPgUp:
@@ -729,9 +896,6 @@ func (a *app) handleBrowseKey(e *tcell.EventKey) (bool, bool) {
 		return false, true
 	case tcell.KeyEnd:
 		a.chooseBrowse(len(a.model.Rows) - 1)
-		return false, true
-	case tcell.KeyTab:
-		a.browseFormat(1)
 		return false, true
 	case tcell.KeyRune:
 		switch e.Rune() {
@@ -1031,6 +1195,8 @@ func (a *app) handleMouse(e *tcell.EventMouse) {
 		case ui.HitDropdown:
 			a.model.Choice = index
 			a.applyChoice()
+		case ui.HitOpenLink:
+			a.openLink(index)
 		case ui.HitCopyName:
 			a.copyName(index)
 		case ui.HitCopyBody:
@@ -1078,7 +1244,7 @@ func (a *app) wheel(x, y, delta int) {
 		return
 	}
 
-	if a.model.Kind.Group() == kube.GroupTraffic {
+	if browsingKind(a.model.Kind) {
 		width, height := a.screen.Size()
 		if target, _ := ui.Hit(*a.model, width, height, x, y); target == ui.HitBrowsePane {
 			a.scrollBrowse(delta)
@@ -1101,7 +1267,7 @@ func (a *app) handleKey(e *tcell.EventKey) bool {
 		return a.handleInputKey(e)
 	}
 
-	if a.model.Kind.Group() == kube.GroupTraffic {
+	if browsingKind(a.model.Kind) {
 		if quit, handled := a.handleBrowseKey(e); handled {
 			return quit
 		}
@@ -1731,6 +1897,19 @@ func (a *app) copyName(index int) {
 	a.copy(a.model.Rows[index].Name, ui.HitCopyName)
 }
 
+func (a *app) openLink(index int) {
+	if index < 0 || index >= len(a.model.Browse.Links) {
+		return
+	}
+
+	link := a.model.Browse.Links[index]
+	if err := browser.Open(link.URL); err != nil {
+		a.model.Note = "cannot open " + link.URL + ": " + err.Error()
+		return
+	}
+	a.model.Note = ""
+}
+
 func (a *app) copyBody() {
 	lines := a.copyable()
 	if len(lines) == 0 {
@@ -1744,7 +1923,7 @@ func (a *app) copyable() []string {
 	if a.model.Screen == ui.ScreenInspect {
 		return a.model.Inspect.Lines()
 	}
-	if a.model.Kind.Group() == kube.GroupTraffic {
+	if browsingKind(a.model.Kind) {
 		lines := append(append([]string(nil), a.model.Browse.Notes...), "")
 		return append(lines, a.model.Browse.Lines()...)
 	}

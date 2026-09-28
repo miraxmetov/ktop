@@ -206,6 +206,14 @@ func (c *Client) Rows(ctx context.Context, namespace string, kind Kind) (Result,
 		return c.networkPolicyRows(ctx, namespace)
 	case KindHTTPRoute:
 		return c.httpRouteRows(ctx, namespace)
+	case KindGateway:
+		return c.gatewayRows(ctx, namespace)
+	case KindVolumeClaim:
+		return c.claimRows(ctx, namespace)
+	case KindVolume:
+		return c.volumeRows(ctx)
+	case KindStorageClass:
+		return c.storageClassRows(ctx)
 	}
 	return c.podRows(ctx, namespace, kind)
 }

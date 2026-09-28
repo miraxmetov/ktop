@@ -1,7 +1,8 @@
 # ktop
 
-A terminal window into one Kubernetes namespace: what its pods and workloads are doing right now,
-what is wrong with them, and what you can do about it without leaving the screen.
+A live terminal window into a Kubernetes cluster: what its workloads are doing right now, how much
+room the nodes and quotas around them have left, whether traffic reaches what it should, what is
+wrong with any of it, and what you can do about it without leaving the screen.
 
 It shows CPU and memory against each pod's own limits, restarts and OOM kills, the last exit code
 with its signal decoded and how long ago the pod restarted. The same table also reads deployments,
@@ -43,25 +44,30 @@ of your own shell. Running the same command again is how you update.
 
 ```sh
 ktop                      # namespace of the current kube context
-ktop production           # a namespace by name
-ktop -n production        # same thing
-ktop production -i 5      # refresh every 5 seconds (default: 1)
+ktop -n production        # a namespace by name
+ktop -n production -i 5   # refresh every 5 seconds (default: 1)
 ktop -c staging -n web    # another kube context
 ```
+
+A namespace is always named with `-n`; a bare word is read as a scope. ktop refuses to start on a
+namespace the cluster does not have, and when a word is misspelt it answers with the nearest one
+it knows, for scopes, for flags and for namespaces alike.
 
 A word after the command opens ktop on a scope instead of pods. Workloads: `po`, `d`, `rs`, `ds`
 and `sts` for pods, deployments, replica sets, daemon sets and stateful sets. The cluster around
 them: `no`, `ns`, `quota` and `limits` for nodes, namespaces, resource quotas and limit ranges.
-Traffic: `svc`, `eps`, `ing`, `netpol` and `hr` for services, endpoint slices, ingresses, network
-policies and HTTP routes.
+Traffic: `svc`, `eps`, `ing`, `netpol`, `gw` and `hr` for services, endpoint slices, ingresses,
+network policies, gateways and HTTP routes. Storage: `pvc`, `pv` and `sc` for volume claims,
+volumes and storage classes.
 `ktop panic` opens the deployments that are critical right now, and `ktop status` prints the
 status line for the namespace and exits, which is what a script or a prompt wants:
 
 ```sh
 ktop d                    # open on deployments
-ktop ds production        # daemon sets of a namespace
+ktop ds -n production     # daemon sets of a namespace
 ktop no                   # nodes, with a meter per node
 ktop svc                  # services, side by side with their configuration
+ktop pv                   # volumes, each with the tank it fills
 ktop panic                # critical deployments, filtered on arrival
 ktop status               # a short report on the namespace, ending in the status line
 ```
@@ -86,7 +92,7 @@ In namespace production:
 Facing 2 critical issues regarding status and memory.
 ```
 
-A namespace that happens to be named like one of those words is still reachable with `-n`.
+Those words are the only positional arguments ktop takes.
 
 Without an argument ktop takes the namespace of the current kubeconfig context, falling back to
 `default` when the context does not name one. The cluster comes from `$KUBECONFIG`, falling back
@@ -122,8 +128,8 @@ close what is open, and scroll the wheel over the table, a list or the inspect s
 
 ## What the table lists
 
-A row of buttons above the status line says what you are looking at: `Workloads`, `Cluster` and
-`Traffic`. Click one and its menu opens, or walk the row with `←` and `→` and open it with `Enter`
+A row of buttons above the status line says what you are looking at: `Workloads`, `Cluster`,
+`Traffic` and `Storage`. Click one and its menu opens, or walk the row with `←` and `→` and open it with `Enter`
 or `↓`, then pick the kind with `↑` and `↓`. The menu carries a tick beside the kind you are on; the button that
 holds the current kind is framed in green and names it, so a glance tells you where you are.
 Everything else keeps working the same way: the same search, the same filters, the same sorting,
@@ -139,12 +145,14 @@ recently restarted pod went down.
 critical/warning machinery reads them, because each has a number with a ceiling: a node measures
 against what it can allocate, a quota against what it allows.
 
-`Traffic` covers services, endpoint slices, ingresses, network policies and Gateway API HTTP
-routes, and it answers one question: can traffic reach what it is meant to reach. A service counts the endpoints behind it,
+`Traffic` covers services, endpoint slices, ingresses, network policies and the Gateway API's
+gateways and HTTP routes, and it answers one question: can traffic reach what it is meant to
+reach. A service counts the endpoints behind it,
 `1/2 endpoints`, and turns red when nothing answers; an ingress follows its backends and says so
 when one of them has nothing ready behind it; a network policy counts the pods it holds and warns
 when it holds none, because a policy that matches nothing shapes nothing; an HTTP route reads the
-conditions its gateway wrote back and turns red when the gateway refused it. HTTP routes are read
+conditions its gateway wrote back and turns red when the gateway refused it; a gateway carries the
+routes hanging off it and warns while it waits for an address. HTTP routes are read
 through the API server's own discovery, so a cluster without the Gateway API simply reports that
 it serves none.
 
@@ -156,19 +164,33 @@ resource, meters included; namespaces count the pods they hold; limit ranges say
 what a container gets when it asks for nothing. Nothing in this group is restarted or deleted from
 ktop, so these rows offer `Inspect` alone.
 
-## Reading traffic
+`Storage` covers volume claims, volumes and storage classes. The signal is the one that matters
+there: bound, pending or lost, with the class and the size beside it, and a class that nothing
+asks for reads as quiet rather than healthy.
 
-The `Traffic` group drops the wide table for a pair of panes: the names on the left, a quarter of
+## Reading traffic and storage
+
+The `Traffic` and `Storage` groups drop the wide table for a pair of panes: the names on the left, a quarter of
 the width, and everything known about the chosen one on the right. `↑` and `↓` walk the list and
 the right pane follows; a click picks a name; the wheel scrolls whichever pane it is over and
-`PgUp` `PgDn` page through the configuration.
+`PgUp` `PgDn` and `Shift+↑` `Shift+↓` page through the configuration.
 
-The right pane is rebuilt on every refresh, so it follows the cluster while you read it. It opens
-with what matters for debugging, before the configuration itself: where the
+The right pane is rebuilt on every refresh, so it follows the cluster while you read it. An
+ingress, a gateway and an HTTP route also carry an `[ open ]` button per address they answer for,
+the host itself and every path under it, which hands that URL to your browser; the scheme follows
+the TLS the object declares, or the listener its gateway serves. It opens with what matters for
+debugging, before the configuration itself: where the
 service is reachable, how many endpoints are ready, which pods a policy holds, and a `mind that`
 line whenever something is wrong, like a selector that matches nothing. The configuration under it
 reads in the same three formats as Inspect, `[ default ]`, `[ textual ]` and `[ yaml ]`, with the
-same colouring, and `Shift+←` `Shift+→` or a click on the buttons moves between them.
+same colouring, and `Tab` or a click on the buttons moves between them, exactly as on the Inspect
+screen. `Shift+↑` `Shift+↓` and `PgUp` `PgDn` scroll what is under them.
+
+A volume and its claim also carry a tank in the top right of the pane, filling from the bottom and
+taking its colour from how full it is, green below three quarters, amber from there, red from nine
+tenths. What it measures is said under it: how much the kubelet reports written, when ktop is
+allowed to ask the node for volume stats, and otherwise how much of the volume is claimed, which
+is all the API server itself knows.
 
 ## The table
 
@@ -184,6 +206,7 @@ the table back to the alphabet.
 | Column | Meaning |
 | --- | --- |
 | `STATUS` | pod phase, or the waiting or terminated reason; `NotReady n/m` when containers are not ready |
+| `RESTART CTR` / `OOM CTR` | the counters, kept beside the status they explain |
 | `CPU` / `MEM` | current usage, summed over the pod's containers |
 | `%LIM` | usage against the sum of the containers' limits; `-` when any container has no limit |
 | `RESTART CTR` | the pod's own restart total, with `+N` for restarts seen while ktop was watching |

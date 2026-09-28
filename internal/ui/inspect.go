@@ -79,6 +79,7 @@ const (
 	textualLabel   = "[ textual ]"
 	yamlLabel      = "[ yaml ]"
 	copyBodyLabel  = "[ copy ]"
+	openLabel      = "[ open ]"
 	logPlaceholder = "Search log stream..."
 )
 
@@ -484,6 +485,10 @@ func valueStyle(label, value string) tcell.Style {
 		return meterStyle(trimmed)
 	}
 
+	if style, found := trafficStyle(label, trimmed); found {
+		return style
+	}
+
 	switch label {
 	case "status", "state":
 		return phraseStyle(trimmed)
@@ -521,6 +526,96 @@ func valueStyle(label, value string) tcell.Style {
 	return styleBase
 }
 
+func trafficStyle(label, value string) (tcell.Style, bool) {
+	switch label {
+	case "endpoints", "routes", "attached", "holds", "claims":
+		return countStyle(value), true
+	case "state":
+		return phraseStyle(value), true
+	case "filled":
+		return fillStyle(value), true
+	case "size", "access", "on release", "binding", "provisioner", "expansion", "default":
+		return styleBase, true
+	case "volume", "claim":
+		if emptyish(value) {
+			return styleWarn, true
+		}
+		return styleAccent, true
+	case "address", "addresses", "reachable at", "cluster ip":
+		if emptyish(value) {
+			return styleWarn, true
+		}
+		return styleAccent, true
+	case "hosts", "host", "gateways", "attached to", "service", "serves", "backends", "to":
+		if emptyish(value) {
+			return styleWarn, true
+		}
+		return styleAccent, true
+	case "class", "type", "governs", "address type", "affinity", "traffic policy":
+		return styleBase, true
+	case "selector", "selects":
+		if emptyish(value) {
+			return styleWarn, true
+		}
+		return styleBase, true
+	case "refused":
+		return styleBad, true
+	case "Accepted", "Programmed", "ResolvedRefs", "ListenersNotValid":
+		if strings.HasPrefix(value, "True") {
+			return styleGood, true
+		}
+		return styleBad, true
+	}
+
+	if strings.HasSuffix(label, " Accepted") || strings.HasSuffix(label, " ResolvedRefs") {
+		if strings.HasPrefix(value, "True") {
+			return styleGood, true
+		}
+		return styleBad, true
+	}
+	return styleBase, false
+}
+
+func emptyish(value string) bool {
+	switch value {
+	case "", "-", "none", "none yet", "nothing", "no service", "no class", "no gateway", "empty":
+		return true
+	}
+	return strings.HasPrefix(value, "no ") || strings.HasPrefix(value, "nothing ")
+}
+
+func fillStyle(value string) tcell.Style {
+	var percent float64
+	if _, err := fmt.Sscanf(strings.TrimSpace(value), "%f%%", &percent); err != nil {
+		return styleBase
+	}
+	return pctStyle(percent)
+}
+
+func countStyle(value string) tcell.Style {
+	var ready, total int
+	if _, err := fmt.Sscanf(value, "%d/%d", &ready, &total); err == nil {
+		switch {
+		case total == 0:
+			return styleDim
+		case ready == 0:
+			return styleBad
+		case ready < total:
+			return styleWarn
+		}
+		return styleGood
+	}
+
+	var count int
+	if _, err := fmt.Sscanf(value, "%d", &count); err == nil {
+		if count == 0 {
+			return styleWarn
+		}
+		return styleGood
+	}
+	return phraseStyle(value)
+}
+
 var phrases = []struct {
 	text  string
 	style tcell.Style
@@ -535,6 +630,18 @@ var phrases = []struct {
 	{"terminated", styleBad},
 	{"Terminating", styleWarn},
 	{"NotReady", styleWarn},
+	{"not ready", styleWarn},
+	{"no endpoints", styleBad},
+	{"refused", styleBad},
+	{"selects no pod", styleWarn},
+	{"no address", styleWarn},
+	{"scaled to zero", styleDim},
+	{"lost,", styleBad},
+	{"failed,", styleBad},
+	{"released,", styleWarn},
+	{"pending,", styleWarn},
+	{"available,", styleDim},
+	{"bound to", styleGood},
 	{"Pending", styleWarn},
 	{"waiting", styleWarn},
 	{"stuck in", styleWarn},

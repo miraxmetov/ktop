@@ -46,7 +46,7 @@ homebrew_casks:
     directory: Casks
     skip_upload: '{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}'
     homepage: https://github.com/miraxmetov/ktop
-    description: A terminal window into one Kubernetes namespace
+    description: A live terminal window into a Kubernetes cluster
     license: mit
     commit_author:
       name: miraxmetov

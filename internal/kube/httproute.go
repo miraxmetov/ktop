@@ -233,10 +233,63 @@ func (c *Client) httpRouteDetail(ctx context.Context, namespace, name string) (*
 		Meta:  metav1.ObjectMeta{Name: item.GetName(), Namespace: item.GetNamespace(), Labels: item.GetLabels()},
 		raw:   item,
 		notes: routeNotes(read, endpoints),
+		links: routeLinks(read, c.routeScheme(ctx, namespace, read)),
 	}
 	detail.body = func(now time.Time) []string { return describeRoute(item, read, endpoints, now) }
 	detail.prose = func(now time.Time) []string { return tellRoute(item, read, endpoints, now) }
 	return detail, nil
+}
+
+func (c *Client) routeScheme(ctx context.Context, namespace string, read route) string {
+	if c.dyn == nil {
+		return "http"
+	}
+
+	for _, parent := range read.parents {
+		name := strings.SplitN(parent, "/", 2)[0]
+		item, err := c.dyn.Resource(gateways).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			continue
+		}
+		for _, l := range readGateway(item).listeners {
+			switch strings.ToUpper(l.protocol) {
+			case "HTTPS", "TLS":
+				return "https"
+			}
+		}
+	}
+	return "http"
+}
+
+func routeLinks(read route, scheme string) []Link {
+	hosts := read.hostnames
+	if len(hosts) == 0 {
+		return nil
+	}
+
+	out := make([]Link, 0, len(hosts)*2)
+	seen := map[string]bool{}
+
+	add := func(host, path string) {
+		url := scheme + "://" + host + or(path, "/")
+		if seen[url] {
+			return
+		}
+		seen[url] = true
+		out = append(out, Link{Text: host + or(path, "/"), URL: url})
+	}
+
+	for _, host := range hosts {
+		add(host, "/")
+		for _, rule := range read.rules {
+			for _, match := range rule.matches {
+				if at := strings.LastIndex(match, "/"); at >= 0 {
+					add(host, match[at:])
+				}
+			}
+		}
+	}
+	return out
 }
 
 func routeNotes(read route, endpoints map[string]endpointCount) []string {

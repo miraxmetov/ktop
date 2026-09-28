@@ -68,6 +68,7 @@ const (
 	HitBrowsePane
 	HitCopyName
 	HitCopyBody
+	HitOpenLink
 	HitColumn
 	HitActionInspect
 	HitActionRestart
@@ -294,6 +295,21 @@ var columns = []column{
 	{key: "status", title: "STATUS", width: 18, tinted: true, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		return r.Status, severityStyle(r.Severity)
 	}},
+	{key: "restarts", title: "RESTART CTR", width: 13, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
+		if r.NewRestarts > 0 {
+			return fmt.Sprintf("%d +%d", r.Restarts, r.NewRestarts), styleWarn
+		}
+		if r.Restarts == 0 {
+			return "0", styleDim
+		}
+		return fmt.Sprintf("%d", r.Restarts), styleBold
+	}},
+	{key: "ooms", title: "OOM CTR", width: 9, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
+		if r.OOMs == 0 {
+			return "0", styleDim
+		}
+		return fmt.Sprintf("%d", r.OOMs), styleBold
+	}},
 	{key: "cpu", title: "CPU", width: 8, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		if !r.HasCPU {
 			return "-", styleDim
@@ -311,21 +327,6 @@ var columns = []column{
 	}},
 	{key: "mem_pct", title: "%LIM", width: 6, tinted: true, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
 		return pctText(r.MemPct), pctStyle(r.MemPct)
-	}},
-	{key: "restarts", title: "RESTART CTR", width: 13, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
-		if r.NewRestarts > 0 {
-			return fmt.Sprintf("%d +%d", r.Restarts, r.NewRestarts), styleWarn
-		}
-		if r.Restarts == 0 {
-			return "0", styleDim
-		}
-		return fmt.Sprintf("%d", r.Restarts), styleBold
-	}},
-	{key: "ooms", title: "OOM CTR", width: 9, sortable: true, value: func(r kube.Row) (string, tcell.Style) {
-		if r.OOMs == 0 {
-			return "0", styleDim
-		}
-		return fmt.Sprintf("%d", r.OOMs), styleBold
 	}},
 	{key: "exit", title: "EXIT", width: 16, value: func(r kube.Row) (string, tcell.Style) {
 		text := ExitText(r.ExitCode, r.ExitReason)
@@ -1672,8 +1673,8 @@ func drawFooter(s tcell.Screen, m Model, g geometry, height, hidden int) {
 	} else if browsing(m) {
 		items = []string{
 			"[" + arrowUp + arrowDown + "] pick",
-			"[Shift+" + arrowLeft + arrowRight + "] format",
-			"[PgUp/PgDn] scroll",
+			"[Tab] format",
+			"[Shift+" + arrowUp + arrowDown + "] scroll",
 			"[/] search " + kindWord(m.Kind),
 			"[Q] quit",
 		}
